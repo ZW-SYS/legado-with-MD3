@@ -64,19 +64,19 @@ class NexFile(var book: Book) {
             getNFile(book).upBookInfo()
         }
 
-        /** 列出整本 .nex 里所有视频的路径，如 assets/video/x.mp4 */
+        /** 列出整本 .nex 里 assets/video/ 下的所有视频 */
         @Synchronized
         fun listAllVideos(book: Book): List<String> {
             return getNFile(book).listAllVideos()
         }
 
-        /** 列出某章 HTML 里出现的视频路径 */
+        /** 列出某章 HTML 里 <video src> 和 <source src> 引用的视频路径 */
         @Synchronized
         fun listVideos(book: Book, chapterUrl: String): List<String> {
             return getNFile(book).listVideos(chapterUrl)
         }
 
-        /** 把指定视频从 .nex 解压到 cacheDir，返回文件。同一个视频只解压一次。 */
+        /** 把视频从 .nex 解压到 cacheDir，返回文件 */
         @Synchronized
         fun extractVideo(book: Book, videoHref: String): File? {
             return getNFile(book).extractVideo(videoHref)
@@ -222,15 +222,19 @@ class NexFile(var book: Book) {
 
         return try {
             ensureOpen()
-            val entry = zipFile?.getEntry(cleanHref) ?: run {
-                AppLog.putDebug("NexFile 缺图片: $href -> 尝试 $cleanHref")
-                val fallback = zipFile?.entries()?.asSequence()
-                    ?.firstOrNull { it.name.endsWith(cleanHref) }
-                if (fallback != null) {
-                    zipFile?.getInputStream(fallback)
-                } else null
+            val zf = zipFile ?: return null
+            val entry: ZipEntry? = zf.getEntry(cleanHref)
+            if (entry != null) {
+                return zf.getInputStream(entry)
             }
-            entry
+            AppLog.putDebug("NexFile 缺图片: $href -> 尝试 $cleanHref")
+            val fallback = zf.entries().asSequence()
+                .firstOrNull { it.name.endsWith(cleanHref) }
+            if (fallback != null) {
+                zf.getInputStream(fallback)
+            } else {
+                null
+            }
         } catch (e: Exception) {
             AppLog.put("NexFile 读图片 $href 失败\n${e.localizedMessage}", e)
             null
@@ -239,7 +243,6 @@ class NexFile(var book: Book) {
 
     /* ============ 视频 ============ */
 
-    /** 列出整本 .nex 里 assets/video/ 下的所有视频 */
     private fun listAllVideos(): List<String> {
         return try {
             ensureOpen()
@@ -253,7 +256,6 @@ class NexFile(var book: Book) {
         }
     }
 
-    /** 列出某章 HTML 里 <video src> 和 <source src> 引用的视频路径 */
     private fun listVideos(chapterUrl: String): List<String> {
         val raw = readEntry(chapterUrl) ?: return emptyList()
         val body = extractBody(raw)
@@ -279,7 +281,6 @@ class NexFile(var book: Book) {
         return s.trimStart('/')
     }
 
-    /** 把视频从 .nex 解压到 cacheDir，返回文件。同一个视频复用同一个缓存文件。 */
     private fun extractVideo(videoHref: String): File? {
         val cleanHref = cleanVideoPath(videoHref)
         if (cleanHref.isEmpty()) return null
@@ -293,13 +294,16 @@ class NexFile(var book: Book) {
 
         return try {
             ensureOpen()
-            val entry = zipFile?.getEntry(cleanHref) ?: run {
+            val zf = zipFile ?: return null
+            var entry: ZipEntry? = zf.getEntry(cleanHref)
+            if (entry == null) {
                 AppLog.putDebug("NexFile 缺视频: $videoHref -> 尝试 $cleanHref")
-                zipFile?.entries()?.asSequence()
-                    ?.firstOrNull { it.name.endsWith(cleanHref) }
-            } ?: return null
+                entry = zf.entries().asSequence()
+                    .firstOrNull { it.name.endsWith(cleanHref) }
+            }
+            if (entry == null) return null
 
-            zipFile?.getInputStream(entry)?.use { input ->
+            zf.getInputStream(entry).use { input ->
                 FileOutputStream(outFile).use { output ->
                     input.copyTo(output, bufferSize = 8192)
                 }

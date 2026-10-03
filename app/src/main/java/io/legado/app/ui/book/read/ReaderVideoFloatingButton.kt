@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
@@ -17,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,13 +39,11 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import io.legado.app.model.localBook.NexFile
 import io.legado.app.ui.theme.LegadoTheme
-import io.legado.app.ui.widget.components.alert.AppAlertDialog
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * 阅读界面右上角的“本章视频”悬浮按钮。
@@ -62,12 +62,13 @@ fun ReaderVideoFloatingButton(
     var showPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(book?.bookUrl) {
-        if (book == null || !book.bookUrl.endsWith(".nex", ignoreCase = true)) {
+        val b = book
+        if (b == null || !b.bookUrl.endsWith(".nex", ignoreCase = true)) {
             videoList = emptyList()
             return@LaunchedEffect
         }
         videoList = withContext(Dispatchers.IO) {
-            runCatching { NexFile.listAllVideos(book) }.getOrDefault(emptyList())
+            runCatching { NexFile.listAllVideos(b) }.getOrDefault(emptyList())
         }
     }
 
@@ -83,8 +84,9 @@ fun ReaderVideoFloatingButton(
                 .clip(CircleShape)
                 .background(LegadoTheme.colorScheme.primary.copy(alpha = 0.85f))
                 .clickable {
+                    val b = book ?: return@clickable
                     if (videoList.size == 1) {
-                        playVideoFromNex(context, scope, book, videoList.first())
+                        playVideoFromNex(context, scope, b, videoList.first())
                     } else {
                         showPicker = true
                     }
@@ -100,42 +102,39 @@ fun ReaderVideoFloatingButton(
         }
     }
 
-    if (showPicker && book != null) {
-        AppAlertDialog(
-            show = true,
+    val pickerBook = book
+    if (showPicker && pickerBook != null) {
+        AlertDialog(
             onDismissRequest = { showPicker = false },
-            title = "选择视频",
-            content = {
-                Box(
+            title = { Text("选择视频") },
+            text = {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 360.dp)
                         .verticalScroll(rememberScrollState()),
                 ) {
-                    androidx.compose.foundation.layout.Column(
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        videoList.forEach { videoPath ->
-                            TextButton(
-                                onClick = {
-                                    showPicker = false
-                                    playVideoFromNex(context, scope, book, videoPath)
-                                },
+                    videoList.forEach { videoPath ->
+                        TextButton(
+                            onClick = {
+                                showPicker = false
+                                playVideoFromNex(context, scope, pickerBook, videoPath)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = videoPath.substringAfterLast('/'),
                                 modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(
-                                    text = videoPath.substringAfterLast('/'),
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
+                            )
                         }
                     }
                 }
             },
-            confirmText = "关闭",
-            onConfirm = { showPicker = false },
-            dismissText = null,
-            onDismiss = { showPicker = false },
+            confirmButton = {
+                TextButton(onClick = { showPicker = false }) {
+                    Text("关闭")
+                }
+            },
         )
     }
 }
