@@ -37,6 +37,8 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.CacheBook
 import io.legado.app.model.SourceCallBack
+import io.legado.app.model.localBook.LocalBook
+import io.legado.app.model.localBook.NexConverter
 import io.legado.app.service.CacheBookService
 import io.legado.app.ui.config.themeConfig.TagColorPair
 import io.legado.app.utils.GSON
@@ -842,6 +844,41 @@ class BookshelfViewModel(
 
             is BookshelfIntent.SetBooksPrivate ->
                 setBooksPrivate(intent.bookUrls, intent.isPrivate)
+
+            is BookshelfIntent.ConvertToNex ->
+                convertToNex(intent.uri, intent.displayName, intent.groupId)
+        }
+    }
+
+    /**
+     * 把用户选的文件（EPUB / DOCX / TXT）转成 .nex，存到用户设定的书籍目录，再导入书架。
+     */
+    private fun convertToNex(uri: Uri, displayName: String, groupId: Long) {
+        if (loadingTextFlow.value != null) return
+        loadingTextFlow.value = "准备转换..."
+        execute {
+            val nexFile = NexConverter.convert(context, uri, displayName) { msg ->
+                loadingTextFlow.value = msg
+            }
+            // 存到用户设定的书籍保存目录
+            val savedUri = nexFile.inputStream().use { input ->
+                LocalBook.saveBookFile(input, nexFile.name)
+            }
+            nexFile.delete()
+            // 导入书架
+            val book = LocalBook.importFile(savedUri)
+            // 分组归属
+            if (groupId > 0) {
+                updateBooksGroupUseCase.replaceGroup(setOf(book.bookUrl), groupId)
+            }
+            book
+        }.onSuccess { book ->
+            showMessage("转换完成：${book.name}")
+        }.onError {
+            AppLog.put("转换 .nex 失败\n${it.localizedMessage}", it)
+            showMessage("转换失败：${it.localizedMessage ?: "未知错误"}")
+        }.onFinally {
+            loadingTextFlow.value = null
         }
     }
 

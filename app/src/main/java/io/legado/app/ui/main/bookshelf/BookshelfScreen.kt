@@ -1,8 +1,10 @@
 package io.legado.app.ui.main.bookshelf
 
 import android.content.ClipData
+import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.compose.PredictiveBackHandler
@@ -184,6 +186,30 @@ fun BookshelfRouteScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val allGroups by viewModel.allGroupsFlow.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    // 转换 .nex 用的文件选择器：EPUB / DOCX / TXT
+    val convertNexLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri ->
+            uri?.let {
+                val groupId = state.groups.getOrNull(state.selectedGroupIndex)?.groupId ?: -1L
+                val displayName = queryDisplayName(context, it)
+                viewModel.onIntent(BookshelfIntent.ConvertToNex(it, displayName, groupId))
+            }
+        }
+    )
+    val onConvertToNex: () -> Unit = {
+        convertNexLauncher.launch(
+            arrayOf(
+                "application/epub+zip",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "text/plain",
+                "*/*"
+            )
+        )
+    }
+
     // 打开书籍会立刻把最后阅读时间落库，排序随之变化：退场动画期间若让书架跟着重排，
     // 正参与共享转场的封面会和它所在的格子错位。因此只在「转场目标是离开书架」时渲染
     // 离开前那一版列表；目标一旦回到可见（正常返回、预测性返回都算），立刻恢复用最新
@@ -210,9 +236,23 @@ fun BookshelfRouteScreen(
         onNavigateToLocalImport = onNavigateToLocalImport,
         onNavigateToCache = onNavigateToCache,
         onNavigateToSettings = onNavigateToSettings,
+        onConvertToNex = onConvertToNex,
         sharedTransitionScope = sharedTransitionScope,
         animatedVisibilityScope = animatedVisibilityScope,
     )
+}
+
+private fun queryDisplayName(context: Context, uri: Uri): String {
+    return runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) cursor.getString(idx) else null
+            } else null
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+        ?: uri.lastPathSegment?.substringAfterLast("/")?.takeIf { it.isNotBlank() }
+        ?: "unknown"
 }
 
 @OptIn(
@@ -236,6 +276,7 @@ fun BookshelfScreen(
     onNavigateToCache: (Long) -> Unit,
     // 私密功能需要本地密码，未设置时引导去设置页
     onNavigateToSettings: () -> Unit = {},
+    onConvertToNex: () -> Unit = {},
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
 ) {
@@ -686,6 +727,11 @@ fun BookshelfScreen(
                                     text = stringResource(R.string.book_local),
                                     onClick = { onNavigateToLocalImport(); dismiss() },
                                     leadingIcon = { Icon(Icons.Default.Save, null) }
+                                )
+                                RoundDropdownMenuItem(
+                                    text = "转 .nex",
+                                    onClick = { onConvertToNex(); dismiss() },
+                                    leadingIcon = { Icon(Icons.Default.Refresh, null) }
                                 )
                                 RoundDropdownMenuItem(
                                     text = stringResource(R.string.update_toc),

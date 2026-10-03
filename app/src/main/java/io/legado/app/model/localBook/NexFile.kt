@@ -26,10 +26,8 @@ import java.util.zip.ZipFile
  *   book.json            章节列表
  *   content/ch1.html     每章正文
  *   assets/img/xxx       图片
+ *   assets/video/xxx     视频
  *   style/main.css       样式
- *
- * 为兼容从 SAF / 网盘 / 各种文件管理器导入的文件，这里先把原始流
- * 复制到应用缓存目录，再用普通路径的 ZipFile 打开（避免 fd 不可 seek 的问题）。
  */
 class NexFile(var book: Book) {
 
@@ -66,6 +64,24 @@ class NexFile(var book: Book) {
             getNFile(book).upBookInfo()
         }
 
+        /** 列出整本 .nex 里所有视频的路径，如 assets/video/x.mp4 */
+        @Synchronized
+        fun listAllVideos(book: Book): List<String> {
+            return getNFile(book).listAllVideos()
+        }
+
+        /** 列出某章 HTML 里出现的视频路径 */
+        @Synchronized
+        fun listVideos(book: Book, chapterUrl: String): List<String> {
+            return getNFile(book).listVideos(chapterUrl)
+        }
+
+        /** 把指定视频从 .nex 解压到 cacheDir，返回文件。同一个视频只解压一次。 */
+        @Synchronized
+        fun extractVideo(book: Book, videoHref: String): File? {
+            return getNFile(book).extractVideo(videoHref)
+        }
+
         fun clear() {
             nFile = null
         }
@@ -88,7 +104,6 @@ class NexFile(var book: Book) {
         val cache = File(appCtx.cacheDir, "nex_" + MD5Utils.md5Encode16(book.bookUrl) + ".zip")
         cacheFile = cache
 
-        // 缓存不存在或为空，就从源复制过来
         if (!cache.exists() || cache.length() == 0L) {
             val descriptor = BookHelp.getBookPFD(book)
                 ?: throw IOException("无法打开 .nex 文件：${book.bookUrl}")
@@ -100,7 +115,6 @@ class NexFile(var book: Book) {
                     }
                 }
             } catch (e: Exception) {
-                // 复制失败就删掉半成品
                 try { cache.delete() } catch (_: Throwable) {}
                 throw IOException("复制 .nex 到缓存失败：${e.localizedMessage}", e)
             }
@@ -193,9 +207,6 @@ class NexFile(var book: Book) {
         return regex.find(html)?.groupValues?.get(1) ?: html
     }
 
-    /**
-     * 把 ../assets/img/xxx 这类相对路径规范化为 assets/img/xxx
-     */
     private fun normalizeAssetPaths(html: String): String {
         return html.replace(Regex("(?:\\.\\./)+assets/"), "assets/")
     }
@@ -203,13 +214,100 @@ class NexFile(var book: Book) {
     /* ============ 图片 ============ */
 
     private fun getImage(href: String): InputStream? {
-        val cleanHref = href.replace(Regex("^(?:\\.\\./)+"), "")
+        var cleanHref = href
+        cleanHref = cleanHref.replace(Regex("^(?:\\.\\./)+"), "")
+        cleanHref = cleanHref.substringAfter("://", cleanHref)
+        cleanHref = cleanHref.substringAfterLast(".nex/", cleanHref)
+        cleanHref = cleanHref.trimStart('/')
+
         return try {
             ensureOpen()
-            val entry = zipFile?.getEntry(cleanHref) ?: return null
-            zipFile?.getInputStream(entry)
+            val entry = zipFile?.getEntry(cleanHref) ?: run {
+                AppLog.putDebug("NexFile 缺图片: $href -> 尝试 $cleanHref")
+                val fallback = zipFile?.entries()?.asSequence()
+                    ?.firstOrNull { it.name.endsWith(cleanHref) }
+                if (fallback != null) {
+                    zipFile?.getInputStream(fallback)
+                } else null
+            }
+            entry
         } catch (e: Exception) {
             AppLog.put("NexFile 读图片 $href 失败\n${e.localizedMessage}", e)
+            null
+        }
+    }
+
+    /* ============ 视频 ============ */
+
+    /** 列出整本 .nex 里 assets/video/ 下的所有视频 */
+    private fun listAllVideos(): List<String> {
+        return try {
+            ensureOpen()
+            zipFile?.entries()?.asSequence()
+                ?.filter { !it.isDirectory && it.name.startsWith("assets/video/") }
+                ?.map { it.name }
+                ?.toList() ?: emptyList()
+        } catch (e: Exception) {
+            AppLog.put("NexFile 列视频失败\n${e.localizedMessage}", e)
+            emptyList()
+        }
+    }
+
+    /** 列出某章 HTML 里 <video src> 和 <source src> 引用的视频路径 */
+    private fun listVideos(chapterUrl: String): List<String> {
+        val raw = readEntry(chapterUrl) ?: return emptyList()
+        val body = extractBody(raw)
+        val normalized = normalizeAssetPaths(body)
+        val result = linkedSetOf<String>()
+
+        Regex("<video[^>]*\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+            .findAll(normalized).forEach { m ->
+                result.add(cleanVideoPath(m.groupValues[1]))
+            }
+        Regex("<source[^>]*\\bsrc\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+            .findAll(normalized).forEach { m ->
+                result.add(cleanVideoPath(m.groupValues[1]))
+            }
+        return result.filter { it.isNotEmpty() }
+    }
+
+    private fun cleanVideoPath(src: String): String {
+        var s = src
+        s = s.replace(Regex("^(?:\\.\\./)+"), "")
+        s = s.substringAfter("://", s)
+        s = s.substringAfterLast(".nex/", s)
+        return s.trimStart('/')
+    }
+
+    /** 把视频从 .nex 解压到 cacheDir，返回文件。同一个视频复用同一个缓存文件。 */
+    private fun extractVideo(videoHref: String): File? {
+        val cleanHref = cleanVideoPath(videoHref)
+        if (cleanHref.isEmpty()) return null
+
+        val ext = cleanHref.substringAfterLast('.', "mp4")
+        val outFile = File(
+            appCtx.cacheDir,
+            "nex_video_" + MD5Utils.md5Encode16(book.bookUrl + "::" + cleanHref) + "." + ext
+        )
+        if (outFile.exists() && outFile.length() > 0L) return outFile
+
+        return try {
+            ensureOpen()
+            val entry = zipFile?.getEntry(cleanHref) ?: run {
+                AppLog.putDebug("NexFile 缺视频: $videoHref -> 尝试 $cleanHref")
+                zipFile?.entries()?.asSequence()
+                    ?.firstOrNull { it.name.endsWith(cleanHref) }
+            } ?: return null
+
+            zipFile?.getInputStream(entry)?.use { input ->
+                FileOutputStream(outFile).use { output ->
+                    input.copyTo(output, bufferSize = 8192)
+                }
+            }
+            if (outFile.length() > 0L) outFile else null
+        } catch (e: Exception) {
+            AppLog.put("NexFile 解压视频 $videoHref 失败\n${e.localizedMessage}", e)
+            try { outFile.delete() } catch (_: Throwable) {}
             null
         }
     }
@@ -217,6 +315,5 @@ class NexFile(var book: Book) {
     protected fun finalize() {
         try { zipFile?.close() } catch (_: Throwable) {}
         try { fileDescriptor?.close() } catch (_: Throwable) {}
-        // 缓存文件保留，下次打开同一个书时复用，系统空间紧张时会自动清理 cacheDir
     }
 }

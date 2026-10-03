@@ -6,7 +6,7 @@ on:
       branch:
         description: '要构建的分支'
         required: true
-        default: 'trae/solo-agent-vhkVM3'
+        default: 'main'
 
 permissions:
   contents: write
@@ -39,49 +39,48 @@ jobs:
         run: |
           sed -i '/maven.aliyun.com/d' settings.gradle
 
-      - name: Build Debug APK
+      - name: Write signing config
+        shell: bash
+        run: |
+          echo "${{ secrets.SIGNING_KEY }}" | base64 -d > "$GITHUB_WORKSPACE/app/my-release-key.jks"
+          {
+            echo ""
+            echo "RELEASE_STORE_FILE=my-release-key.jks"
+            echo "RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
+            echo "RELEASE_KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
+            echo "RELEASE_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
+          } >> "$GITHUB_WORKSPACE/gradle.properties"
+
+      - name: Build Signed Release APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleAppDebug -PenableAbiSplits=false --no-daemon --no-configuration-cache
+          ./gradlew assembleAppRelease -PenableAbiSplits=false --no-daemon --no-configuration-cache
         env:
           COMMIT_NUMBER: ${{ github.run_number }}
-          APP_VERSION_NAME: debug-${{ github.run_number }}
+          APP_VERSION_NAME: signed-${{ github.run_number }}
 
       - name: Check Build Output
         run: |
-          APK_PATH="$GITHUB_WORKSPACE/app/build/outputs/apk/app/debug"
+          APK_PATH="$GITHUB_WORKSPACE/app/build/outputs/apk/app/release"
           echo "检查 APK 输出目录: $APK_PATH"
           ls -la "$APK_PATH" || true
           APK_COUNT=$(find "$APK_PATH" -maxdepth 1 -name "*.apk" | wc -l | tr -d ' ')
-          if [ "$APK_COUNT" -ne 1 ]; then
-            echo "预期生成 1 个 universal APK，实际生成 $APK_COUNT 个！"
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo "没有生成 APK！"
             exit 1
           fi
 
       - name: Rename APK Files
         run: |
-          APK_PATH="$GITHUB_WORKSPACE/app/build/outputs/apk/app/debug"
+          APK_PATH="$GITHUB_WORKSPACE/app/build/outputs/apk/app/release"
           cd "$APK_PATH"
-          mv -- *.apk "legado-debug-${GITHUB_RUN_NUMBER}-universal.apk"
+          for f in *.apk; do
+            mv "$f" "legado-signed-${GITHUB_RUN_NUMBER}-${f}"
+          done
           ls -la
-
-      - name: Create ZIP Archive
-        run: |
-          APK_PATH="$GITHUB_WORKSPACE/app/build/outputs/apk/app/debug"
-          ZIP_NAME="legado-debug-apks-${GITHUB_RUN_NUMBER}.zip"
-          cd "$APK_PATH"
-          zip "$GITHUB_WORKSPACE/$ZIP_NAME" *.apk
-          echo "ZIP 文件已创建: $ZIP_NAME"
-          ls -la "$GITHUB_WORKSPACE/$ZIP_NAME"
 
       - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: legado-apks-${{ github.run_number }}
-          path: app/build/outputs/apk/app/debug/*.apk
-
-      - name: Upload ZIP Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: legado-apks-zip-${{ github.run_number }}
-          path: legado-debug-apks-*.zip
+          path: app/build/outputs/apk/app/release/*.apk

@@ -17,6 +17,7 @@ import io.legado.app.help.book.isMobi
 import io.legado.app.help.book.isPdf
 import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.MobiFile
+import io.legado.app.model.localBook.NexFile
 import io.legado.app.model.localBook.PdfFile
 import io.legado.app.utils.BitmapUtils
 import io.legado.app.utils.FileUtils
@@ -128,7 +129,7 @@ object ImageProvider {
     }
 
     /**
-     *缓存网络图片和epub图片
+     *缓存网络图片和epub/nex图片
      */
     suspend fun cacheImage(
         book: Book,
@@ -138,7 +139,11 @@ object ImageProvider {
         return withContext(IO) {
             val vFile = BookHelp.getImage(book, src)
             if (!BookHelp.isImageExist(book, src)) {
+                // .nex 与 epub 同理，图片藏在 zip 内部
+                val isNex = book.bookUrl.endsWith(".nex", ignoreCase = true) ||
+                        (book.originName?.endsWith(".nex", ignoreCase = true) == true)
                 val inputStream = when {
+                    isNex -> NexFile.getImage(book, src)
                     book.isEpub -> EpubFile.getImage(book, src)
                     book.isPdf -> PdfFile.getImage(book, src)
                     book.isMobi -> MobiFile.getImage(book, src)

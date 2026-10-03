@@ -39,6 +39,9 @@ sealed interface BookshelfOverlay {
     data class GroupEditSheet(val groupId: Long) : BookshelfOverlay
     data object BatchDownloadConfirmDialog : BookshelfOverlay
     data object DeleteBooksConfirmDialog : BookshelfOverlay
+
+    /** 转换 .nex 用的文件选择器（EPUB / DOCX / TXT） */
+    data object ConvertNexFilePicker : BookshelfOverlay
 }
 
 sealed interface BookshelfIntent {
@@ -99,6 +102,12 @@ sealed interface BookshelfIntent {
     /** 待打开的私密书已经处理完，清空挂起目标 */
     data object ConsumePendingOpenBook : BookshelfIntent
 
+    /** 用户选好了要转换的成本地书文件（EPUB / DOCX / TXT） */
+    data class ConvertToNex(
+        val uri: Uri,
+        val displayName: String,
+        val groupId: Long
+    ) : BookshelfIntent
 }
 
 sealed interface BookshelfEffect {

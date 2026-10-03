@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -55,6 +56,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
@@ -867,6 +869,13 @@ fun ReadBookRouteScreen(
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
+        ReaderVideoFloatingButton(
+            book = state.book,
+            menuVisible = state.menuVisible,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 72.dp, end = 12.dp),
+        )
         ReaderPerfTrace.marker("compose.chrome.begin")
         ReadBookColorTheme(
             styleConfig = state.styleConfig,
