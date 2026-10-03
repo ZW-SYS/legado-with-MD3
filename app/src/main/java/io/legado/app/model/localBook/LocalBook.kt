@@ -70,7 +70,7 @@ import java.io.InputStream
 
 /**
  * 书籍文件导入 目录正文解析
- * 支持在线文件(txt epub umd 压缩文件 本地文件
+ * 支持在线文件(txt epub nex umd 压缩文件 本地文件
  */
 object LocalBook {
 
@@ -84,6 +84,13 @@ object LocalBook {
         Regex("(^)(.+) 作者：(.+)$"),
         Regex("(^)(.+) by (.+)$")
     )
+
+    /**
+     * 判断是否为 .nex 本地书。判断依据是文件后缀，不修改 BookExtensions 也能工作。
+     */
+    private fun Book.isNexLocal(): Boolean =
+        bookUrl.endsWith(".nex", ignoreCase = true) ||
+                (originName?.endsWith(".nex", ignoreCase = true) == true)
 
     @Throws(FileNotFoundException::class, SecurityException::class)
     fun getBookInputStream(book: Book): InputStream {
@@ -129,6 +136,10 @@ object LocalBook {
     @Throws(TocEmptyException::class)
     fun getChapterList(book: Book): ArrayList<BookChapter> {
         val chapters = when {
+            book.isNexLocal() -> {
+                NexFile.getChapterList(book)
+            }
+
             book.isEpub -> {
                 EpubFile.getChapterList(book)
             }
@@ -181,6 +192,10 @@ object LocalBook {
     fun getContent(book: Book, chapter: BookChapter): String? {
         var content = try {
             when {
+                book.isNexLocal() -> {
+                    NexFile.getContent(book, chapter)
+                }
+
                 book.isEpub -> {
                     EpubFile.getContent(book, chapter)
                 }
@@ -232,7 +247,7 @@ object LocalBook {
     }
 
     /**
-     * 下载在线的文件并自动导入到阅读（txt umd epub)
+     * 下载在线的文件并自动导入到阅读（txt umd epub nex)
      */
     suspend fun importFileOnLine(
         str: String,
@@ -311,6 +326,7 @@ object LocalBook {
 
     fun upBookInfo(book: Book) {
         when {
+            book.isNexLocal() -> NexFile.upBookInfo(book)
             book.isEpub -> EpubFile.upBookInfo(book)
             book.isUmd -> UmdFile.upBookInfo(book)
             book.isPdf -> PdfFile.upBookInfo(book)
@@ -346,7 +362,8 @@ object LocalBook {
     fun importFiles(uri: Uri): List<Book> {
         val books = mutableListOf<Book>()
         val fileDoc = FileDoc.fromUri(uri, false)
-        if (ArchiveUtils.isArchive(fileDoc.name)) {
+        val isNexFile = fileDoc.name.endsWith(".nex", ignoreCase = true)
+        if (!isNexFile && ArchiveUtils.isArchive(fileDoc.name)) {
             val entries = ArchiveUtils.getArchiveFilesName(fileDoc)
             val isComicArchive = entries.any { entry ->
                 entry.substringAfterLast('.', "").lowercase() in
@@ -554,7 +571,7 @@ object LocalBook {
                     localBook.origin = newBook.origin
                     localBook.bookUrl = newBook.bookUrl
                 } else {
-                    // txt epub pdf umd
+                    // txt epub nex pdf umd
                     val oldBook = localBook.copy()
                     val fileUri = saveBookFile(it, localBook.originName)
                     val newBookUrl = FileDoc.fromUri(fileUri, false).toString()

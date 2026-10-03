@@ -336,6 +336,7 @@ fun ImportBookRouteScreen(
                     "application/x-mobipocket-ebook", "application/vnd.amazon.ebook",
                     "application/zip", "application/x-rar-compressed",
                     "application/x-7z-compressed", "application/octet-stream",
+                    "*/*",
                 )
             )
         },
