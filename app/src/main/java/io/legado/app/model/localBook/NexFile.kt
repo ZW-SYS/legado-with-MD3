@@ -6,8 +6,13 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookHelp
 import io.legado.app.utils.HtmlFormatter
+import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.printOnDebug
 import org.json.JSONObject
+import splitties.init.appCtx
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.util.zip.ZipEntry
@@ -18,13 +23,13 @@ import java.util.zip.ZipFile
  *
  * .nex 本质是 ZIP，内部结构：
  *   manifest.json        书名、作者
- *   book.json            章节列表、设置
+ *   book.json            章节列表
  *   content/ch1.html     每章正文
- *   assets/img/xxx       图片/音频/视频
+ *   assets/img/xxx       图片
  *   style/main.css       样式
  *
- * 图片在正文里的写法是相对路径 ../assets/img/xxx
- * 阅读器显示图片时调用 getImage(href)，href 由 HtmlFormatter 从 <img src> 里提取。
+ * 为兼容从 SAF / 网盘 / 各种文件管理器导入的文件，这里先把原始流
+ * 复制到应用缓存目录，再用普通路径的 ZipFile 打开（避免 fd 不可 seek 的问题）。
  */
 class NexFile(var book: Book) {
 
@@ -66,11 +71,9 @@ class NexFile(var book: Book) {
         }
     }
 
-    /**
-     * 持有引用，避免被 GC
-     */
     private var fileDescriptor: ParcelFileDescriptor? = null
     private var zipFile: ZipFile? = null
+    private var cacheFile: File? = null
 
     init {
         upBookCover(true)
@@ -78,21 +81,41 @@ class NexFile(var book: Book) {
 
     /* ============ 打开 zip ============ */
 
+    @Synchronized
     private fun ensureOpen() {
-        if (zipFile == null) {
+        if (zipFile != null) return
+
+        val cache = File(appCtx.cacheDir, "nex_" + MD5Utils.md5Encode16(book.bookUrl) + ".zip")
+        cacheFile = cache
+
+        // 缓存不存在或为空，就从源复制过来
+        if (!cache.exists() || cache.length() == 0L) {
             val descriptor = BookHelp.getBookPFD(book)
                 ?: throw IOException("无法打开 .nex 文件：${book.bookUrl}")
             fileDescriptor = descriptor
-            // Android 是 Linux，可直接通过 /proc/self/fd/<fd> 打开 ZipFile
-            val path = "/proc/self/fd/${descriptor.fd}"
-            zipFile = ZipFile(path)
+            try {
+                FileInputStream(descriptor.fileDescriptor).use { input ->
+                    FileOutputStream(cache).use { output ->
+                        input.copyTo(output, bufferSize = 8192)
+                    }
+                }
+            } catch (e: Exception) {
+                // 复制失败就删掉半成品
+                try { cache.delete() } catch (_: Throwable) {}
+                throw IOException("复制 .nex 到缓存失败：${e.localizedMessage}", e)
+            }
         }
+
+        zipFile = ZipFile(cache)
     }
 
     private fun readEntry(name: String): String? {
         return try {
             ensureOpen()
-            val entry: ZipEntry = zipFile?.getEntry(name) ?: return null
+            val entry: ZipEntry = zipFile?.getEntry(name) ?: run {
+                AppLog.putDebug("NexFile 缺少条目: $name")
+                return null
+            }
             zipFile?.getInputStream(entry)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
         } catch (e: Exception) {
             AppLog.put("NexFile 读 $name 失败\n${e.localizedMessage}", e)
@@ -124,8 +147,7 @@ class NexFile(var book: Book) {
     }
 
     private fun upBookCover(fastCheck: Boolean = false) {
-        // .nex 暂不支持封面，留空即可
-        // 如果以后 manifest.json 里加了 "cover" 字段，在这里实现
+        // .nex 暂不支持封面，留空
     }
 
     /* ============ 章节列表 ============ */
@@ -166,17 +188,13 @@ class NexFile(var book: Book) {
         return HtmlFormatter.formatKeepImg(normalized)
     }
 
-    /**
-     * 取 <body> 内的内容
-     */
     private fun extractBody(html: String): String {
         val regex = Regex("<body[^>]*>([\\s\\S]*?)</body>", RegexOption.IGNORE_CASE)
         return regex.find(html)?.groupValues?.get(1) ?: html
     }
 
     /**
-     * 把 ../assets/img/xxx 这类相对路径规范化成 assets/img/xxx
-     * （章节在 content/ 下，图片在 assets/ 下）
+     * 把 ../assets/img/xxx 这类相对路径规范化为 assets/img/xxx
      */
     private fun normalizeAssetPaths(html: String): String {
         return html.replace(Regex("(?:\\.\\./)+assets/"), "assets/")
@@ -197,13 +215,8 @@ class NexFile(var book: Book) {
     }
 
     protected fun finalize() {
-        try {
-            zipFile?.close()
-        } catch (_: Throwable) {
-        }
-        try {
-            fileDescriptor?.close()
-        } catch (_: Throwable) {
-        }
+        try { zipFile?.close() } catch (_: Throwable) {}
+        try { fileDescriptor?.close() } catch (_: Throwable) {}
+        // 缓存文件保留，下次打开同一个书时复用，系统空间紧张时会自动清理 cacheDir
     }
 }
