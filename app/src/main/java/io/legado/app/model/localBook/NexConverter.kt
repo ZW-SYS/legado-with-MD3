@@ -3,7 +3,6 @@ package io.legado.app.model.localBook
 import android.content.Context
 import android.net.Uri
 import android.util.Xml
-import io.legado.app.utils.printOnDebug
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -189,7 +188,6 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
                 val spineIds = Regex("<itemref\\b[^>]*idref=\"([^\"]+)\"").findAll(opfXml)
                     .map { it.groupValues[1] }.toList()
 
-                // 从 NCX / nav.xhtml 读目录标题
                 val titleMap = mutableMapOf<String, String>()
                 val ncxPath = Regex("<item\\b[^>]*media-type=\"application/x-dtbncx\\+xml\"[^>]*href=\"([^\"]+)\"")
                     .find(opfXml)?.groupValues?.get(1)?.let { opfDir + it }
@@ -301,13 +299,6 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         }
     }
 
-    /**
-     * 章节标题兜底策略（按优先级）：
-     * 1. NCX / nav 里的标题 —— 过滤掉纯文件名
-     * 2. 正文 h1 / h2 / h3
-     * 3. 正文第一段文字（前 40 字）
-     * 4. 文件名美化（ch001.xhtml → 第 1 章）
-     */
     private fun extractChapterTitle(
         mapped: String?,
         doc: Document,
@@ -317,21 +308,17 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         if (!mapped.isNullOrBlank() && !isFileNameLike(mapped)) {
             return mapped
         }
-
         doc.selectFirst("h1, h2, h3")?.text()?.trim()?.let {
             if (it.isNotEmpty() && !isFileNameLike(it)) return it
         }
-
         doc.selectFirst("body p")?.text()?.trim()?.let {
             if (it.length >= 2 && !isFileNameLike(it)) {
                 return if (it.length > 40) it.take(40) + "…" else it
             }
         }
-
         return prettifyFileName(path, idx)
     }
 
-    /** 判断字符串是不是"ch001.xhtml"、"chapter1"、"index.html"这类无意义文件名 */
     private fun isFileNameLike(s: String): Boolean {
         val t = s.trim()
         if (t.isEmpty()) return true
@@ -340,7 +327,6 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         return false
     }
 
-    /** ch001.xhtml → 第 1 章；foo.xhtml → 第 idx 章 */
     private fun prettifyFileName(path: String, idx: Int): String {
         val name = path.substringAfterLast('/').substringBeforeLast('.')
         val num = Regex("(\\d+)").find(name)?.groupValues?.get(1)
@@ -421,14 +407,9 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
                     ?: throw IllegalStateException("DOCX 缺少 word/document.xml")
                 val paragraphs = parseDocxParagraphs(zip.getInputStream(docEntry), assetMap)
 
-                var chapters = splitByHeadingLevel(paragraphs, 1)
-                if (chapters.size <= 1) {
-                    chapters = splitByChapterText(paragraphs)
-                }
-                if (chapters.size <= 1) {
-                    val body = paragraphs.joinToString("\n") { it.html }
-                    chapters = listOf(Chapter("正文", body))
-                }
+                // 先把所有段落拼成一整段纯文本，按「第X章」的正则扫描一遍，
+                // 这样即使 Word 里标题没设样式、只是普通段落，也能识别出来。
+                val chapters = splitDocxParagraphs(paragraphs)
 
                 return NexContent(title, author, chapters, assets)
             }
@@ -439,6 +420,12 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
 
     private data class DocxParagraph(val level: Int, val text: String, val html: String)
 
+    /**
+     * 解析 DOCX 段落。
+     *
+     * 关键修复：Android XmlPullParser 在不同系统上返回的标签名可能带前缀
+     * （"w:p"）也可能不带（"p"）。统一去前缀后再比较。
+     */
     private fun parseDocxParagraphs(
         input: InputStream,
         assetMap: Map<String, String>
@@ -451,36 +438,45 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         var currentText = StringBuilder()
         var currentHtml = StringBuilder()
 
+        fun local(raw: String?): String {
+            if (raw == null) return ""
+            val i = raw.indexOf(':')
+            return if (i >= 0) raw.substring(i + 1) else raw
+        }
+
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
-            val name = parser.name
+            val name = local(parser.name)
             when (event) {
                 XmlPullParser.START_TAG -> {
                     when (name) {
-                        "w:p" -> {
+                        "p" -> {
                             inParagraph = true
                             headingLevel = 0
                             currentText = StringBuilder()
                             currentHtml = StringBuilder()
                         }
-                        "w:pStyle" -> {
+                        "pStyle" -> {
                             val v = parser.getAttributeValue(null, "w:val")
                                 ?: parser.getAttributeValue(null, "val") ?: ""
-                            if (v.contains("Heading1", true) || v == "1") headingLevel = 1
-                            else if (v.contains("Heading2", true) || v == "2") headingLevel = 2
-                            else if (v.contains("Heading3", true) || v == "3") headingLevel = 3
+                            val lv = local(v)
+                            if (lv.contains("Heading1", true) || lv == "1" ||
+                                v.contains("Heading1", true)) headingLevel = 1
+                            else if (lv.contains("Heading2", true) || lv == "2" ||
+                                v.contains("Heading2", true)) headingLevel = 2
+                            else if (lv.contains("Heading3", true) || lv == "3" ||
+                                v.contains("Heading3", true)) headingLevel = 3
                         }
-                        "w:t" -> {
-                            val text = parser.nextText()
-                            if (inParagraph) {
+                        "t" -> {
+                            val text = readTextUntilEndTag(parser, "t")
+                            if (inParagraph && text.isNotEmpty()) {
                                 currentText.append(text)
                                 currentHtml.append(escapeHtml(text))
                             }
                         }
-                        "w:br" -> {
-                            if (inParagraph) currentHtml.append("<br>")
-                        }
-                        "a:blip" -> {
+                        "br" -> if (inParagraph) currentHtml.append("<br>")
+                        "tab" -> if (inParagraph) currentHtml.append("&nbsp;&nbsp;&nbsp;&nbsp;")
+                        "blip" -> {
                             val embed = parser.getAttributeValue(
                                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
                                 "embed"
@@ -495,7 +491,7 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
                     }
                 }
                 XmlPullParser.END_TAG -> {
-                    if (name == "w:p" && inParagraph) {
+                    if (name == "p" && inParagraph) {
                         inParagraph = false
                         val text = currentText.toString().trim()
                         val html = currentHtml.toString()
@@ -508,15 +504,60 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         return result
     }
 
-    private fun splitByHeadingLevel(paragraphs: List<DocxParagraph>, level: Int): List<Chapter> {
+    /** 从当前 START_TAG 起，读到同名 END_TAG 为止，返回中间的所有文本。 */
+    private fun readTextUntilEndTag(parser: XmlPullParser, tag: String): String {
+        val sb = StringBuilder()
+        var depth = 1
+        try {
+            var ev = parser.next()
+            while (ev != XmlPullParser.END_DOCUMENT) {
+                when (ev) {
+                    XmlPullParser.TEXT, XmlPullParser.CDSECT -> sb.append(parser.text ?: "")
+                    XmlPullParser.START_TAG -> depth++
+                    XmlPullParser.END_TAG -> {
+                        depth--
+                        if (depth == 0) return sb.toString()
+                    }
+                }
+                ev = parser.next()
+            }
+        } catch (_: Exception) {
+        }
+        return sb.toString()
+    }
+
+    /**
+     * DOCX 分章逻辑（按优先级）：
+     *
+     * 1. 有 Heading 样式的段落：按 Heading1 切
+     * 2. 没有 Heading：扫描每个段落的文本，凡是匹配「第X章 / 第X回 / 第X节 / 卷X / Chapter X」
+     *    这类章节标题格式的段落，就当成一章的标题，从它开始切
+     * 3. 都没有：整篇一章
+     */
+    private fun splitDocxParagraphs(paragraphs: List<DocxParagraph>): List<Chapter> {
+        // 1. 先试样式
+        val byStyle = splitByHeadingStyle(paragraphs, 1)
+        if (byStyle.size > 1) return byStyle
+
+        // 2. 再试文本
+        val byText = splitByChapterText(paragraphs)
+        if (byText.size > 1) return byText
+
+        // 3. 兜底
+        val body = paragraphs.joinToString("\n") { p ->
+            if (p.html.isBlank()) "" else "<p>${p.html}</p>"
+        }
+        return listOf(Chapter("正文", body))
+    }
+
+    private fun splitByHeadingStyle(paragraphs: List<DocxParagraph>, level: Int): List<Chapter> {
         val chapters = mutableListOf<Chapter>()
         var currentTitle: String? = null
         val buffer = StringBuilder()
 
         fun flush() {
             if (currentTitle != null || buffer.isNotBlank()) {
-                val t = currentTitle ?: "正文"
-                chapters.add(Chapter(t, buffer.toString()))
+                chapters.add(Chapter(currentTitle ?: "正文", buffer.toString()))
             }
             buffer.clear()
         }
@@ -524,42 +565,35 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         for (p in paragraphs) {
             if (p.level == level && p.text.isNotEmpty()) {
                 flush()
-                val tag = "h$level"
-                buffer.append("<$tag>${escapeHtml(p.text)}</$tag>\n")
+                buffer.append("<h1>${escapeHtml(p.text)}</h1>\n")
                 currentTitle = p.text
-            } else {
-                if (p.html.isNotBlank()) buffer.append("<p>${p.html}</p>\n")
+            } else if (p.html.isNotBlank()) {
+                buffer.append("<p>${p.html}</p>\n")
             }
         }
         flush()
-        if (chapters.size <= 1 && currentTitle == null) return emptyList()
         return chapters
     }
 
+    /**
+     * 扫描普通段落文本，凡匹配章节标题格式就当标题切章。
+     * 这就是用户要的"自动识别文字里的第X章"。
+     */
     private fun splitByChapterText(paragraphs: List<DocxParagraph>): List<Chapter> {
-        val patterns = listOf(
-            Regex("^第[一二三四五六七八九十百千万零两\\d]+[章节回卷篇][^\\n]{0,50}$"),
-            Regex("^Chapter\\s+\\d+[^\\n]{0,50}$", RegexOption.IGNORE_CASE),
-            Regex("^卷[一二三四五六七八九十百千万零两\\d]+[^\\n]{0,50}$"),
-            Regex("^[（(]?\\d{1,4}[）)]?[、\\.\\s].{0,50}$")
-        )
-
         val chapters = mutableListOf<Chapter>()
         var currentTitle: String? = null
         val buffer = StringBuilder()
 
         fun flush() {
             if (currentTitle != null || buffer.isNotBlank()) {
-                val t = currentTitle ?: "正文"
-                chapters.add(Chapter(t, buffer.toString()))
+                chapters.add(Chapter(currentTitle ?: "正文", buffer.toString()))
             }
             buffer.clear()
         }
 
         for (p in paragraphs) {
             val text = p.text
-            val isTitle = text.isNotEmpty() && patterns.any { it.matches(text) }
-            if (isTitle) {
+            if (text.isNotEmpty() && isChapterTitle(text)) {
                 flush()
                 buffer.append("<h2>${escapeHtml(text)}</h2>\n")
                 currentTitle = text
@@ -569,6 +603,24 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         }
         flush()
         return chapters
+    }
+
+    /** 判断一个段落的纯文本是不是章节标题 */
+    private fun isChapterTitle(text: String): Boolean {
+        if (text.length > 60) return false
+        if (text.length < 2) return false
+        // 中文常见章节标题
+        if (Regex("^第[一二三四五六七八九十百千万零两0-9]{1,10}[章节回卷篇][\\s\\S]{0,50}$").matches(text)) return true
+        // Chapter X
+        if (Regex("^Chapter\\s+\\d+[\\s\\S]{0,50}$", RegexOption.IGNORE_CASE).matches(text)) return true
+        // 卷X
+        if (Regex("^卷[一二三四五六七八九十百千万零两0-9]{1,10}[\\s\\S]{0,50}$").matches(text)) return true
+        // 纯数字编号 "1." "1、" "（1）" 后跟少量文字
+        if (Regex("^[（(]?[0-9]{1,4}[）)][、\\.\\s]?[\\s\\S]{0,50}$").matches(text) &&
+            text.length <= 40) return true
+        if (Regex("^[0-9]{1,4}[、\\.][\\s\\S]{1,50}$").matches(text) &&
+            text.length <= 40) return true
+        return false
     }
 
     /* ===================== TXT ===================== */
@@ -609,12 +661,6 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
     }
 
     private fun splitTxtByChapter(text: String): List<Chapter> {
-        val patterns = listOf(
-            Regex("^\\s*第[一二三四五六七八九十百千万零两\\d]+[章节回卷篇][^\\n]{0,40}$"),
-            Regex("^\\s*Chapter\\s+\\d+[^\\n]{0,40}$", RegexOption.IGNORE_CASE),
-            Regex("^\\s*卷[一二三四五六七八九十百千万零两\\d]+[^\\n]{0,40}$")
-        )
-
         val lines = text.replace("\r\n", "\n").split("\n")
         val chapters = mutableListOf<Chapter>()
         var currentTitle: String? = null
@@ -622,17 +668,17 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
 
         fun flush() {
             if (currentTitle != null || currentBody.isNotBlank()) {
-                val title = currentTitle ?: "正文"
-                chapters.add(Chapter(title, bodyToHtml(currentBody.toString())))
+                chapters.add(Chapter(currentTitle ?: "正文", bodyToHtml(currentBody.toString())))
             }
             currentBody.clear()
         }
 
         for (line in lines) {
-            val isTitle = patterns.any { it.matches(line) }
+            val trimmed = line.trim()
+            val isTitle = trimmed.isNotEmpty() && isChapterTitle(trimmed)
             if (isTitle) {
                 flush()
-                currentTitle = line.trim()
+                currentTitle = trimmed
             } else {
                 currentBody.append(line).append('\n')
             }

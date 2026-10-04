@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SelectAll
@@ -110,6 +111,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.legado.app.R
+import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.domain.model.PrivateUnlockTarget
 import io.legado.app.help.security.BiometricUnlockLauncher
@@ -188,7 +190,7 @@ fun BookshelfRouteScreen(
     val allGroups by viewModel.allGroupsFlow.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // 转换 .nex 用的文件选择器：EPUB / DOCX / TXT
+    // 转 .nex 文件选择器
     val convertNexLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
         onResult = { uri ->
@@ -210,16 +212,32 @@ fun BookshelfRouteScreen(
         )
     }
 
-    // 打开书籍会立刻把最后阅读时间落库，排序随之变化：退场动画期间若让书架跟着重排，
-    // 正参与共享转场的封面会和它所在的格子错位。因此只在「转场目标是离开书架」时渲染
-    // 离开前那一版列表；目标一旦回到可见（正常返回、预测性返回都算），立刻恢复用最新
-    // 排序 —— 重排发生在书架不可见的时候，回到书架时看到的已经是排好的结果。
+    // 导出 .nex 用的 CreateDocument 文件保存器
+    var pendingExportBook by remember { mutableStateOf<Book?>(null) }
+    var pendingExportFormat by remember { mutableStateOf("epub") }
+    val exportNexLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        if (uri != null) {
+            val b = pendingExportBook
+            if (b != null) {
+                viewModel.onIntent(BookshelfIntent.ExportNex(b, pendingExportFormat, uri))
+            }
+        }
+        pendingExportBook = null
+    }
+    val onExportNex: (Book, String) -> Unit = { book, format ->
+        pendingExportBook = book
+        pendingExportFormat = format
+        val suggestedName = "${book.name}.${format}"
+        exportNexLauncher.launch(suggestedName)
+    }
+
     val transition = animatedVisibilityScope?.transition
     val isLeavingShelf = transition?.targetState == EnterExitState.PostExit
     var leavingShelfState by remember { mutableStateOf<BookshelfUiState?>(null) }
     LaunchedEffect(isLeavingShelf) {
         if (isLeavingShelf) return@LaunchedEffect
-        // 可见期间持续跟随最新状态，快照因此不会残留成过期版本（例如点了私密书但没跳转）
         snapshotFlow { state }.collect { leavingShelfState = it }
     }
     BookshelfScreen(
@@ -237,6 +255,7 @@ fun BookshelfRouteScreen(
         onNavigateToCache = onNavigateToCache,
         onNavigateToSettings = onNavigateToSettings,
         onConvertToNex = onConvertToNex,
+        onExportNex = onExportNex,
         sharedTransitionScope = sharedTransitionScope,
         animatedVisibilityScope = animatedVisibilityScope,
     )
@@ -274,9 +293,9 @@ fun BookshelfScreen(
     onNavigateToRemoteImport: () -> Unit,
     onNavigateToLocalImport: () -> Unit,
     onNavigateToCache: (Long) -> Unit,
-    // 私密功能需要本地密码，未设置时引导去设置页
     onNavigateToSettings: () -> Unit = {},
     onConvertToNex: () -> Unit = {},
+    onExportNex: (Book, String) -> Unit = { _, _ -> },
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
 ) {
@@ -287,13 +306,10 @@ fun BookshelfScreen(
     val clipboardManager = LocalClipboard.current
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
-    // 资源串在 composable 作用域内解析：LocalContext.current.getString 不感知配置变化，
-    // 语言/字体缩放切换后可能拿到过期值（LocalContextGetResourceValueCall）。
     val unlockTitle = stringResource(R.string.private_unlock_title)
     val unlockSubtitle = stringResource(R.string.private_unlock_subtitle)
     val unlockUsePassword = stringResource(R.string.private_unlock_use_password)
 
-    /** 系统生物验证框必须由 FragmentActivity 承载；拿不到宿主就直接用应用内密码 */
     fun launchBiometricUnlock(target: PrivateUnlockTarget) {
         val activity = context.findFragmentActivity()
         if (activity == null) {
@@ -317,23 +333,10 @@ fun BookshelfScreen(
         )
     }
 
-    /**
-     * 点击脱敏的私密书籍：等同于点了一次"验证"。
-     *
-     * 验证通过后由 ViewModel 打开阅读，而不是在这里直接调 onBookClick——解锁是异步的，
-     * 要等列表重新包含这本书再打开，否则事件会早于状态更新而丢失。
-     */
     val requestBookUnlock: (String) -> Unit = { bookUrl ->
         onIntent(BookshelfIntent.RequestPrivateUnlock(PrivateUnlockTarget.Book(bookUrl)))
     }
 
-    /**
-     * 打开书籍的统一出口。
-     *
-     * 不在这里撤销授权：撤销的所有权已经移到阅读器入口的私密闸门——
-     * 它是"授权存活到离开阅读器为止"的唯一事实来源。在这里提前撤销会让紧随其后的
-     * 闸门把刚验证过的用户再拦一次。
-     */
     val openBook: (BookShelfItem, String?) -> Unit = { book, sharedCoverKey ->
         onBookClick(book, sharedCoverKey)
     }
@@ -366,14 +369,6 @@ fun BookshelfScreen(
         }
     }
 
-    // 解锁是"一致性关键"的动作：等这本书不再是锁定态、且重新出现在列表里之后再打开，
-    // 否则事件会早于状态更新而丢失。
-    //
-    // 两个坑都在 key 与判定上：
-    // 1. privateAccess 必须进 key。"每次都要验证"频率下，验证成功只把目标写进
-    //    grantedBookUrls，列表内容一眼不变——只拿列表当 key 的话这次授权压根不会触发重启；
-    // 2. 判定用"这本书还锁不锁"而不是 privateAccess.isUnlocked，后者的只在
-    //    "本次进程验证一次"频率下才置位，用它当门槛会让"每次都要验证"的用户永远打不开。
     LaunchedEffect(
         uiState.pendingOpenBookUrl,
         uiState.privateAccess,
@@ -594,6 +589,9 @@ fun BookshelfScreen(
 
     val scrollBehavior = GlassTopAppBarDefaults.defaultScrollBehavior()
     var showTopBarMenu by remember { mutableStateOf(false) }
+    var showNexEditor by remember { mutableStateOf(false) }
+    var showMergeDialog by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
     val onSearchClick = {
         if (uiState.settings.bookshelfSearchActionDirectToSearch) {
             onNavigateToSearch(uiState.searchKey.trim())
@@ -732,6 +730,21 @@ fun BookshelfScreen(
                                     text = "转 .nex",
                                     onClick = { onConvertToNex(); dismiss() },
                                     leadingIcon = { Icon(Icons.Default.Refresh, null) }
+                                )
+                                RoundDropdownMenuItem(
+                                    text = "编辑 .nex",
+                                    onClick = { showNexEditor = true; dismiss() },
+                                    leadingIcon = { Icon(Icons.Default.Edit, null) }
+                                )
+                                RoundDropdownMenuItem(
+                                    text = "合并 .nex",
+                                    onClick = { showMergeDialog = true; dismiss() },
+                                    leadingIcon = { Icon(Icons.Default.MergeType, null) }
+                                )
+                                RoundDropdownMenuItem(
+                                    text = "导出 EPUB/TXT",
+                                    onClick = { showExportDialog = true; dismiss() },
+                                    leadingIcon = { Icon(Icons.Default.UploadFile, null) }
                                 )
                                 RoundDropdownMenuItem(
                                     text = stringResource(R.string.update_toc),
@@ -1041,7 +1054,6 @@ fun BookshelfScreen(
                         itemsIndexed(
                             uiState.groups,
                             key = { _, it -> it.groupId }) { index, group ->
-                            // 私密分组在文件夹根目录也不露出预览封面与书籍数量
                             val groupLocked = uiState.isGroupLocked(group)
                             val countText = if (uiState.settings.showBookCount && !groupLocked) {
                                 uiState.groupBookCounts[group.groupId]?.let {
@@ -1096,8 +1108,6 @@ fun BookshelfScreen(
                         }
                     }
                 } else {
-                    // 注意：锁定态只替换"某个分组自己的内容区"，不能替换整个分页容器，
-                    // 否则用户会被卡在锁定页里、连相邻分组都切不过去。
                     if (isUsingStandaloneSearchGroup) {
                         if (uiState.selectedGroupLocked) {
                             PrivateGroupLockedPage(
@@ -1144,8 +1154,6 @@ fun BookshelfScreen(
                         ) { pageIndex ->
                             val group = uiState.groups.getOrNull(pageIndex)
                             if (group != null) {
-                                // 锁定 ↔ 解锁之间交叉淡化。只锁这个分组的内容区，
-                                // 左右相邻分组仍可正常滑动切换。
                                 Crossfade(
                                     targetState = uiState.isGroupLocked(group),
                                     animationSpec = tween(220),
@@ -1345,6 +1353,36 @@ fun BookshelfScreen(
         exportLauncher = exportLauncher,
         clearSelection = clearSelection
     )
+
+    NexEditorHost(
+        show = showNexEditor,
+        books = uiState.items,
+        onDismiss = { showNexEditor = false },
+        onSave = { book, title, author, coverUri ->
+            onIntent(BookshelfIntent.EditNex(book, title, author, coverUri))
+            showNexEditor = false
+        },
+    )
+
+    MergeNexDialog(
+        show = showMergeDialog,
+        books = uiState.items,
+        onDismiss = { showMergeDialog = false },
+        onConfirm = { selectedBooks, outputTitle ->
+            onIntent(BookshelfIntent.MergeNex(selectedBooks, outputTitle))
+            showMergeDialog = false
+        },
+    )
+
+    ExportNexDialog(
+        show = showExportDialog,
+        books = uiState.items,
+        onDismiss = { showExportDialog = false },
+        onConfirm = { book, format ->
+            onExportNex(book, format)
+            showExportDialog = false
+        },
+    )
 }
 
 @Composable
@@ -1448,7 +1486,6 @@ private fun BookshelfOverlays(
         onDismissRequest = { onIntent(BookshelfIntent.DismissOverlay) }
     )
 
-    // 应用内密码解锁：生物不可用、用户点了"使用密码"，或设备不支持时的统一兜底
     if (activeOverlay is BookshelfOverlay.PrivatePassword) {
         val target = activeOverlay.target
         var password by remember(target) { mutableStateOf("") }
@@ -1555,7 +1592,6 @@ private fun BookshelfOverlays(
     )
 
     if (activeOverlay == BookshelfOverlay.DeleteBooksConfirmDialog) {
-        // 勾选态只活在这次弹窗里：每次打开都从"不删源文件"起步
         var deleteOriginal by remember { mutableStateOf(false) }
         val hasLocalBook = remember(uiState.items, selectedBookUrls) {
             uiState.items.any { it.book.isLocal && it.book.bookUrl in selectedBookUrls }
@@ -1626,12 +1662,6 @@ private data class BookshelfEditStickySummary(
     val showGroupName: Boolean,
 )
 
-/**
- * 私密分组的锁定态内容区。
- *
- * 只替换"这个分组自己的内容"，不动分页容器——否则用户会被卡在锁定页里，
- * 连相邻分组都切不过去。提示块复用 [PrivateLockedPage]，与详情页脱敏态是同一套呈现。
- */
 @Composable
 private fun PrivateGroupLockedPage(
     groupId: Long,
@@ -1677,7 +1707,6 @@ fun BookshelfPage(
     onGlobalSearch: () -> Unit,
     onBookClick: (BookShelfItem, String?) -> Unit,
     onBookLongClick: (BookShelfItem, String?) -> Unit,
-    /** 点击处于脱敏状态的私密书籍：请求验证，验证通过后自动打开阅读 */
     onLockedBookClick: (String) -> Unit = {},
     isCurrentPage: Boolean = true,
     sharedCoverGroupId: Long,
@@ -1802,8 +1831,6 @@ fun BookshelfPage(
                     enabled = canReorderBooks
                 ) { isDragging ->
                     val bookLocked = uiState.isBookLocked(bookUi)
-                    // 锁定 ⇄ 解锁的过渡在 BookItem 内部完成：封面走模糊深度、文字走占位替换。
-                    // 不在这一层整体模糊，是因为整体 blur 会把封面圆角与阴影一起糊掉。
                     BookItem(
                         settings = uiState.settings,
                         customTagColors = if (uiState.enableCustomTagColors) {
@@ -1875,8 +1902,6 @@ fun BookshelfPage(
                                 if (uiState.isEditMode) {
                                     onToggleBookSelection(bookUi)
                                 } else {
-                                    // 长按一律进详情页：脱敏渲染在详情页内完成，
-                                    // 不给"长按只弹验证、进不去详情"的分叉
                                     onBookLongClick(bookUi.book, sharedCoverKey)
                                 }
                             }

@@ -39,6 +39,9 @@ import io.legado.app.model.CacheBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.model.localBook.LocalBook
 import io.legado.app.model.localBook.NexConverter
+import io.legado.app.model.localBook.NexEditor
+import io.legado.app.model.localBook.NexExporter
+import io.legado.app.model.localBook.NexMerger
 import io.legado.app.service.CacheBookService
 import io.legado.app.ui.config.themeConfig.TagColorPair
 import io.legado.app.utils.GSON
@@ -723,11 +726,6 @@ class BookshelfViewModel(
             themeColor = themeSettings.themeColor,
             pendingUploadUrl = pendingUploadUrl,
         )
-        // 常驻订阅：进入阅读页后 UI 停止收集，若让上游在超时后停掉，返回书架的前几帧
-        // 读到的仍是「阅读前」那一版排序，等 Room 重新查询到达再跳一次，重排就发生在
-        // 书架已经可见之后。管道挂在 viewModelScope（ViewModel 随返回栈条目存活），
-        // 因此返回首帧即是最新排序。与 komikku 的 LibraryScreenModel 同思路：
-        // 状态管道由 ScreenModel/ViewModel 自己持有，不随 UI 订阅启停。
     }.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
@@ -847,6 +845,15 @@ class BookshelfViewModel(
 
             is BookshelfIntent.ConvertToNex ->
                 convertToNex(intent.uri, intent.displayName, intent.groupId)
+
+            is BookshelfIntent.EditNex ->
+                editNex(intent.book, intent.title, intent.author, intent.coverUri)
+
+            is BookshelfIntent.MergeNex ->
+                mergeNex(intent.books, intent.outputTitle)
+
+            is BookshelfIntent.ExportNex ->
+                exportNex(intent.book, intent.format, intent.targetUri)
         }
     }
 
@@ -860,14 +867,11 @@ class BookshelfViewModel(
             val nexFile = NexConverter.convert(context, uri, displayName) { msg ->
                 loadingTextFlow.value = msg
             }
-            // 存到用户设定的书籍保存目录
             val savedUri = nexFile.inputStream().use { input ->
                 LocalBook.saveBookFile(input, nexFile.name)
             }
             nexFile.delete()
-            // 导入书架
             val book = LocalBook.importFile(savedUri)
-            // 分组归属
             if (groupId > 0) {
                 updateBooksGroupUseCase.replaceGroup(setOf(book.bookUrl), groupId)
             }
@@ -883,18 +887,98 @@ class BookshelfViewModel(
     }
 
     /**
+     * 编辑 .nex：改书名、作者、封面。
+     */
+    private fun editNex(book: Book, title: String, author: String, coverUri: Uri?) {
+        if (loadingTextFlow.value != null) return
+        loadingTextFlow.value = "正在保存..."
+        execute {
+            NexEditor.edit(context, book, title, author, coverUri) { msg ->
+                loadingTextFlow.value = msg
+            }
+        }.onSuccess {
+            showMessage("已保存")
+        }.onError {
+            AppLog.put("编辑 .nex 失败\n${it.localizedMessage}", it)
+            showMessage("保存失败：${it.localizedMessage ?: "未知错误"}")
+        }.onFinally {
+            loadingTextFlow.value = null
+        }
+    }
+
+    /**
+     * 合并多本 .nex 成一本。
+     */
+    private fun mergeNex(books: List<Book>, outputTitle: String?) {
+        if (books.isEmpty()) {
+            showMessage("没有可合并的书")
+            return
+        }
+        if (loadingTextFlow.value != null) return
+        loadingTextFlow.value = "准备合并..."
+        execute {
+            val merged = NexMerger.merge(context, books, outputTitle) { msg ->
+                loadingTextFlow.value = msg
+            }
+            val savedUri = merged.inputStream().use { input ->
+                LocalBook.saveBookFile(input, merged.name)
+            }
+            merged.delete()
+            val newBook = LocalBook.importFile(savedUri)
+            newBook
+        }.onSuccess { newBook ->
+            showMessage("合并完成：${newBook.name}")
+        }.onError {
+            AppLog.put("合并 .nex 失败\n${it.localizedMessage}", it)
+            showMessage("合并失败：${it.localizedMessage ?: "未知错误"}")
+        }.onFinally {
+            loadingTextFlow.value = null
+        }
+    }
+
+    /**
+     * 把 .nex 导出成 EPUB 或 TXT，写入用户选定的 uri。
+     */
+    private fun exportNex(book: Book, format: String, targetUri: Uri) {
+        if (loadingTextFlow.value != null) return
+        loadingTextFlow.value = "正在导出..."
+        execute {
+            val file = when (format) {
+                "epub" -> NexExporter.toEpub(context, book) { msg ->
+                    loadingTextFlow.value = msg
+                }
+
+                "txt" -> NexExporter.toTxt(context, book) { msg ->
+                    loadingTextFlow.value = msg
+                }
+
+                else -> throw IllegalArgumentException("未知格式：$format")
+            }
+            // 写入用户选定的 uri
+            context.contentResolver.openOutputStream(targetUri, "wt")?.use { out ->
+                file.inputStream().use { it.copyTo(out) }
+            } ?: throw IllegalStateException("无法打开输出位置")
+            file.delete()
+        }.onSuccess {
+            showMessage("导出完成")
+        }.onError {
+            AppLog.put("导出 .nex 失败\n${it.localizedMessage}", it)
+            showMessage("导出失败：${it.localizedMessage ?: "未知错误"}")
+        }.onFinally {
+            loadingTextFlow.value = null
+        }
+    }
+
+    /**
      * 私密内容的统一入口：已解锁直接放行，否则按"生物快捷 → 应用内密码 → 引导设密码"降级。
      */
     private fun requestPrivateUnlock(target: PrivateUnlockTarget) {
         val access = privateAccessStateFlow.value
         if (target is PrivateUnlockTarget.Book) {
-            // 打开书籍落成状态：解锁后列表才会重新包含这本书，此时再打开才不会丢事件
             pendingOpenBookUrlFlow.value = target.bookUrl
         }
         if (access.isUnlocked) return
         if (!access.hasPassword) {
-            // 没有密码就没有解锁路径：把刚挂上的目标一起撤掉，
-            // 否则以后任意一次授权（进分组、启动验证）都会让这本旧书被自动打开
             pendingOpenBookUrlFlow.value = null
             _effects.tryEmit(BookshelfEffect.NavigateToLocalPasswordSettings)
             return
@@ -912,7 +996,6 @@ class BookshelfViewModel(
             if (privateAccessGateway.verifyPassword(password, target)) {
                 activeOverlayFlow.value = null
             } else {
-                // 校验失败就把挂起动作一起清掉，避免之后某次成功解锁误打开旧目标
                 pendingOpenBookUrlFlow.value = null
                 _effects.tryEmit(
                     BookshelfEffect.ShowSnackbar(
@@ -942,7 +1025,6 @@ class BookshelfViewModel(
         isSearchMode: Boolean,
         hidePrivate: (BookUiItem) -> Boolean = { false }
     ): List<BookUiItem> {
-        // 仍处于锁定态的私密书籍先剔掉，再谈匹配：否则"能不能搜到"本身就是泄漏
         val candidates = if (isSearchMode && searchKey.isNotBlank()) {
             books.filterNot(hidePrivate)
         } else {
@@ -985,7 +1067,6 @@ class BookshelfViewModel(
 
     fun changeGroup(groupId: Long) {
         if (groupIdFlow.value != groupId) {
-            // "每次验证"频率下离开分组即撤销授权，下次进来要重新验证
             privateAccessGateway.revoke(PrivateUnlockTarget.Group(groupIdFlow.value))
             groupIdFlow.value = groupId
             viewModelScope.launch {
@@ -993,12 +1074,8 @@ class BookshelfViewModel(
             }
             clearSelection()
             clearDragState()
-            // 切分组即放弃"解锁后打开"的挂起目标：这本书已经不在当前分组里了，
-            // 留着它会在以后某次回到该分组时莫名把书弹开
             pendingOpenBookUrlFlow.value = null
         }
-        // 进入私密分组不在这里申请权限：先呈现锁定页，由用户点"验证并查看"时再申请。
-        // 否则左右滑动浏览分组会被连续弹窗打断，而用户此刻可能只是想路过这个分组。
     }
 
     fun setSearchKey(key: String) {
@@ -1135,7 +1212,6 @@ class BookshelfViewModel(
         execute {
             deleteBooksUseCase.execute(bookUrls, deleteOriginal)
         }.onSuccess { deletedBookUrls ->
-            // 已经删掉的书不能继续留在选中集合里，否则下一次批量操作会带上幽灵 url
             val remaining = selectedBookUrlsFlow.value - deletedBookUrls.toSet()
             if (remaining.size != selectedBookUrlsFlow.value.size) {
                 selectedBookUrlsFlow.value = remaining

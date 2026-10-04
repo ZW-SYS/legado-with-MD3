@@ -2,6 +2,7 @@ package io.legado.app.ui.main.bookshelf
 
 import android.net.Uri
 import androidx.compose.runtime.Stable
+import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.domain.model.PrivateAccessState
 import io.legado.app.domain.model.PrivateUnlockTarget
@@ -107,6 +108,27 @@ sealed interface BookshelfIntent {
         val uri: Uri,
         val displayName: String,
         val groupId: Long
+    ) : BookshelfIntent
+
+    /** 编辑 .nex 的书名、作者、封面 */
+    data class EditNex(
+        val book: Book,
+        val title: String,
+        val author: String,
+        val coverUri: Uri?,
+    ) : BookshelfIntent
+
+    /** 合并多本 .nex */
+    data class MergeNex(
+        val books: List<Book>,
+        val outputTitle: String?
+    ) : BookshelfIntent
+
+    /** 导出 .nex 为 EPUB / TXT。format 取 "epub" 或 "txt" */
+    data class ExportNex(
+        val book: Book,
+        val format: String,
+        val targetUri: Uri
     ) : BookshelfIntent
 }
 
