@@ -3,13 +3,13 @@ package io.legado.app.model.localBook
 import android.content.Context
 import android.net.Uri
 import android.util.Xml
-import io.legado.app.constant.AppLog
 import io.legado.app.utils.printOnDebug
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.FileOutputStream
@@ -21,14 +21,6 @@ import java.util.zip.ZipOutputStream
 
 /**
  * 把 EPUB / DOCX / TXT 转成 .nex 文件。
- *
- * 生成的 .nex 结构：
- *   manifest.json
- *   book.json
- *   content/ch1.html, ch2.html ...
- *   assets/img/xxx
- *   assets/video/xxx
- *   style/main.css
  */
 object NexConverter {
 
@@ -41,10 +33,6 @@ object NexConverter {
         val assets: List<Asset>
     )
 
-    /**
-     * 把 uri 指向的文件转成 .nex，返回生成的临时文件（在 cacheDir 下）。
-     * 调用方负责用 LocalBook.saveBookFile 把它存到用户目录。
-     */
     suspend fun convert(
         context: Context,
         uri: Uri,
@@ -64,13 +52,13 @@ object NexConverter {
         outFile
     }
 
-    /* ===================== 打包 ===================== */
-
     private fun writeNex(outFile: File, content: NexContent) {
         ZipOutputStream(FileOutputStream(outFile).buffered()).use { zip ->
             val manifest = JSONObject().apply {
                 put("format", "nex")
                 put("version", "1.0")
+                put("spec_author", "ZW-SYS")
+                put("spec_url", "https://github.com/ZW-SYS/legado-with-MD3")
                 put("title", content.title)
                 put("author", content.author)
                 put("language", "zh-CN")
@@ -201,6 +189,40 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
                 val spineIds = Regex("<itemref\\b[^>]*idref=\"([^\"]+)\"").findAll(opfXml)
                     .map { it.groupValues[1] }.toList()
 
+                // 从 NCX / nav.xhtml 读目录标题
+                val titleMap = mutableMapOf<String, String>()
+                val ncxPath = Regex("<item\\b[^>]*media-type=\"application/x-dtbncx\\+xml\"[^>]*href=\"([^\"]+)\"")
+                    .find(opfXml)?.groupValues?.get(1)?.let { opfDir + it }
+                if (ncxPath != null) {
+                    zip.getEntry(ncxPath)?.let { e ->
+                        val ncxXml = zip.getInputStream(e).bufferedReader().readText()
+                        Regex("<navPoint[^>]*>[\\s\\S]*?</navPoint>").findAll(ncxXml).forEach { m ->
+                            val seg = m.value
+                            val label = Regex("<text>([\\s\\S]*?)</text>").find(seg)
+                                ?.groupValues?.get(1)?.trim().orEmpty()
+                            val src = Regex("<content[^>]*src=\"([^\"]+)\"").find(seg)
+                                ?.groupValues?.get(1)?.substringBefore("#")?.let { opfDir + it }
+                            if (label.isNotEmpty() && src != null) titleMap[src] = label
+                        }
+                    }
+                }
+                if (titleMap.isEmpty()) {
+                    val navPath = Regex("<item\\b[^>]*properties=\"[^\"]*nav[^\"]*\"[^>]*href=\"([^\"]+)\"")
+                        .find(opfXml)?.groupValues?.get(1)?.let { opfDir + it }
+                    if (navPath != null) {
+                        zip.getEntry(navPath)?.let { e ->
+                            val navDoc = Jsoup.parse(zip.getInputStream(e).bufferedReader().readText())
+                            navDoc.select("nav a[href]").forEach { a ->
+                                val label = a.text().trim()
+                                val href = a.attr("href").substringBefore("#")
+                                if (label.isNotEmpty() && href.isNotEmpty()) {
+                                    titleMap[opfDir + href] = label
+                                }
+                            }
+                        }
+                    }
+                }
+
                 onProgress("抽取 EPUB 资源")
                 val assetMap = mutableMapOf<String, String>()
                 val assets = mutableListOf<Asset>()
@@ -261,8 +283,13 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
 
                     idx++
                     onProgress("EPUB 第 $idx 章")
-                    val h = doc.selectFirst("h1, h2, h3, title")
-                    val chapterTitle = h?.text()?.trim().orEmpty().ifEmpty { "第 $idx 章" }
+
+                    val chapterTitle = extractChapterTitle(
+                        mapped = titleMap[full],
+                        doc = doc,
+                        path = full,
+                        idx = idx
+                    )
                     chapters.add(Chapter(chapterTitle, body))
                 }
 
@@ -271,6 +298,57 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
             }
         } finally {
             temp.delete()
+        }
+    }
+
+    /**
+     * 章节标题兜底策略（按优先级）：
+     * 1. NCX / nav 里的标题 —— 过滤掉纯文件名
+     * 2. 正文 h1 / h2 / h3
+     * 3. 正文第一段文字（前 40 字）
+     * 4. 文件名美化（ch001.xhtml → 第 1 章）
+     */
+    private fun extractChapterTitle(
+        mapped: String?,
+        doc: Document,
+        path: String,
+        idx: Int
+    ): String {
+        if (!mapped.isNullOrBlank() && !isFileNameLike(mapped)) {
+            return mapped
+        }
+
+        doc.selectFirst("h1, h2, h3")?.text()?.trim()?.let {
+            if (it.isNotEmpty() && !isFileNameLike(it)) return it
+        }
+
+        doc.selectFirst("body p")?.text()?.trim()?.let {
+            if (it.length >= 2 && !isFileNameLike(it)) {
+                return if (it.length > 40) it.take(40) + "…" else it
+            }
+        }
+
+        return prettifyFileName(path, idx)
+    }
+
+    /** 判断字符串是不是"ch001.xhtml"、"chapter1"、"index.html"这类无意义文件名 */
+    private fun isFileNameLike(s: String): Boolean {
+        val t = s.trim()
+        if (t.isEmpty()) return true
+        if (t.matches(Regex("^[a-zA-Z_\\-]+\\d*\\.(x?html?|xml|htm|xhtml)$", RegexOption.IGNORE_CASE))) return true
+        if (t.matches(Regex("^(ch|chapter|part|sec|section|index|c\\d*)\\d*$", RegexOption.IGNORE_CASE))) return true
+        return false
+    }
+
+    /** ch001.xhtml → 第 1 章；foo.xhtml → 第 idx 章 */
+    private fun prettifyFileName(path: String, idx: Int): String {
+        val name = path.substringAfterLast('/').substringBeforeLast('.')
+        val num = Regex("(\\d+)").find(name)?.groupValues?.get(1)
+        return if (num != null) {
+            val n = num.toIntOrNull()
+            if (n != null) "第 $n 章" else "第 $num 章"
+        } else {
+            "第 $idx 章"
         }
     }
 
@@ -341,9 +419,16 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
                 onProgress("解析 DOCX 正文")
                 val docEntry = zip.getEntry("word/document.xml")
                     ?: throw IllegalStateException("DOCX 缺少 word/document.xml")
-                val bodyHtml = parseDocxBody(zip.getInputStream(docEntry), assetMap)
-                val chapters = splitHtmlByHeading(bodyHtml)
-                    .let { if (it.isEmpty()) listOf(Chapter("正文", bodyHtml)) else it }
+                val paragraphs = parseDocxParagraphs(zip.getInputStream(docEntry), assetMap)
+
+                var chapters = splitByHeadingLevel(paragraphs, 1)
+                if (chapters.size <= 1) {
+                    chapters = splitByChapterText(paragraphs)
+                }
+                if (chapters.size <= 1) {
+                    val body = paragraphs.joinToString("\n") { it.html }
+                    chapters = listOf(Chapter("正文", body))
+                }
 
                 return NexContent(title, author, chapters, assets)
             }
@@ -352,16 +437,19 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
         }
     }
 
-    private fun parseDocxBody(
+    private data class DocxParagraph(val level: Int, val text: String, val html: String)
+
+    private fun parseDocxParagraphs(
         input: InputStream,
         assetMap: Map<String, String>
-    ): String {
+    ): List<DocxParagraph> {
         val parser = Xml.newPullParser()
         parser.setInput(input, "UTF-8")
-        val sb = StringBuilder()
+        val result = mutableListOf<DocxParagraph>()
         var inParagraph = false
-        var paragraphStyle = ""
-        var currentParagraph = StringBuilder()
+        var headingLevel = 0
+        var currentText = StringBuilder()
+        var currentHtml = StringBuilder()
 
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -371,61 +459,116 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
                     when (name) {
                         "w:p" -> {
                             inParagraph = true
-                            paragraphStyle = ""
-                            currentParagraph = StringBuilder()
+                            headingLevel = 0
+                            currentText = StringBuilder()
+                            currentHtml = StringBuilder()
                         }
                         "w:pStyle" -> {
-                            paragraphStyle = parser.getAttributeValue(null, "w:val")
-                                ?: parser.getAttributeValue(null, "val")
-                                ?: ""
+                            val v = parser.getAttributeValue(null, "w:val")
+                                ?: parser.getAttributeValue(null, "val") ?: ""
+                            if (v.contains("Heading1", true) || v == "1") headingLevel = 1
+                            else if (v.contains("Heading2", true) || v == "2") headingLevel = 2
+                            else if (v.contains("Heading3", true) || v == "3") headingLevel = 3
                         }
                         "w:t" -> {
                             val text = parser.nextText()
-                            if (inParagraph) currentParagraph.append(escapeHtml(text))
+                            if (inParagraph) {
+                                currentText.append(text)
+                                currentHtml.append(escapeHtml(text))
+                            }
                         }
                         "w:br" -> {
-                            if (inParagraph) currentParagraph.append("<br>")
+                            if (inParagraph) currentHtml.append("<br>")
                         }
                         "a:blip" -> {
                             val embed = parser.getAttributeValue(
                                 "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
                                 "embed"
                             ) ?: parser.getAttributeValue(null, "r:embed")
-                            if (embed != null) {
+                            if (embed != null && inParagraph) {
                                 val mapped = assetMap[embed]
                                 if (mapped != null) {
-                                    currentParagraph.append(
-                                        """<img src="../$mapped">"""
-                                    )
+                                    currentHtml.append("""<img src="../$mapped">""")
                                 }
                             }
                         }
                     }
                 }
                 XmlPullParser.END_TAG -> {
-                    if (name == "w:p") {
+                    if (name == "w:p" && inParagraph) {
                         inParagraph = false
-                        val text = currentParagraph.toString()
-                        if (text.isBlank()) {
-                            sb.append("<p>&nbsp;</p>\n")
-                        } else {
-                            val tag = when {
-                                paragraphStyle.contains("Heading1", true) ||
-                                        paragraphStyle == "1" -> "h1"
-                                paragraphStyle.contains("Heading2", true) ||
-                                        paragraphStyle == "2" -> "h2"
-                                paragraphStyle.contains("Heading3", true) ||
-                                        paragraphStyle == "3" -> "h3"
-                                else -> "p"
-                            }
-                            sb.append("<$tag>$text</$tag>\n")
-                        }
+                        val text = currentText.toString().trim()
+                        val html = currentHtml.toString()
+                        result.add(DocxParagraph(level = headingLevel, text = text, html = html))
                     }
                 }
             }
             event = parser.next()
         }
-        return sb.toString()
+        return result
+    }
+
+    private fun splitByHeadingLevel(paragraphs: List<DocxParagraph>, level: Int): List<Chapter> {
+        val chapters = mutableListOf<Chapter>()
+        var currentTitle: String? = null
+        val buffer = StringBuilder()
+
+        fun flush() {
+            if (currentTitle != null || buffer.isNotBlank()) {
+                val t = currentTitle ?: "正文"
+                chapters.add(Chapter(t, buffer.toString()))
+            }
+            buffer.clear()
+        }
+
+        for (p in paragraphs) {
+            if (p.level == level && p.text.isNotEmpty()) {
+                flush()
+                val tag = "h$level"
+                buffer.append("<$tag>${escapeHtml(p.text)}</$tag>\n")
+                currentTitle = p.text
+            } else {
+                if (p.html.isNotBlank()) buffer.append("<p>${p.html}</p>\n")
+            }
+        }
+        flush()
+        if (chapters.size <= 1 && currentTitle == null) return emptyList()
+        return chapters
+    }
+
+    private fun splitByChapterText(paragraphs: List<DocxParagraph>): List<Chapter> {
+        val patterns = listOf(
+            Regex("^第[一二三四五六七八九十百千万零两\\d]+[章节回卷篇][^\\n]{0,50}$"),
+            Regex("^Chapter\\s+\\d+[^\\n]{0,50}$", RegexOption.IGNORE_CASE),
+            Regex("^卷[一二三四五六七八九十百千万零两\\d]+[^\\n]{0,50}$"),
+            Regex("^[（(]?\\d{1,4}[）)]?[、\\.\\s].{0,50}$")
+        )
+
+        val chapters = mutableListOf<Chapter>()
+        var currentTitle: String? = null
+        val buffer = StringBuilder()
+
+        fun flush() {
+            if (currentTitle != null || buffer.isNotBlank()) {
+                val t = currentTitle ?: "正文"
+                chapters.add(Chapter(t, buffer.toString()))
+            }
+            buffer.clear()
+        }
+
+        for (p in paragraphs) {
+            val text = p.text
+            val isTitle = text.isNotEmpty() && patterns.any { it.matches(text) }
+            if (isTitle) {
+                flush()
+                buffer.append("<h2>${escapeHtml(text)}</h2>\n")
+                currentTitle = text
+            } else if (p.html.isNotBlank()) {
+                buffer.append("<p>${p.html}</p>\n")
+            }
+        }
+        flush()
+        return chapters
     }
 
     /* ===================== TXT ===================== */
@@ -546,20 +689,5 @@ blockquote { border-left: 4px solid #3d7dff; margin: 1em 0; padding: 4px 16px; c
     private fun extractXmlTag(xml: String, tag: String): String {
         val m = Regex("<$tag[^>]*>([\\s\\S]*?)</$tag>").find(xml) ?: return ""
         return m.groupValues[1].trim()
-    }
-
-    private fun splitHtmlByHeading(html: String): List<Chapter> {
-        val parts = html.split(Regex("(?=<h1[^>]*>)", RegexOption.IGNORE_CASE))
-            .filter { it.isNotBlank() }
-        if (parts.size <= 1) return emptyList()
-        return parts.mapIndexed { i, part ->
-            val m = Regex("<h1[^>]*>([\\s\\S]*?)</h1>", RegexOption.IGNORE_CASE).find(part)
-            val title = m?.groupValues?.get(1)
-                ?.replace(Regex("<[^>]+>"), "")
-                ?.trim()
-                .orEmpty()
-                .ifEmpty { "第 ${i + 1} 章" }
-            Chapter(title, part)
-        }
     }
 }

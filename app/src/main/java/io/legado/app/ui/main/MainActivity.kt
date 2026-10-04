@@ -130,6 +130,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         private const val KEY_RESTORE_READ_ALOUD = "restoreReadAloud"
         private const val KEY_RESTORE_READ_IN_BOOKSHELF = "restoreReadInBookshelf"
         private const val KEY_RESTORE_READ_CHAPTER_CHANGED = "restoreReadChapterChanged"
+        private const val KEY_ENCOURAGEMENT_SHOWN = "encouragementShown"
         private val startupUpdateCheckGate = ProcessStartupUpdateCheckGate()
 
         @Volatile
@@ -468,6 +469,9 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
         val backStack = rememberNavBackStack(*startRoutes)
         SideEffect { navRouteTracker.onBackStackChanged(backStack) }
 
+        // 开屏鼓励语：只在进程首次启动时弹一次，转屏/返回不重复
+        var showEncouragement by rememberSaveable { mutableStateOf(true) }
+
         // 悬浮胶囊是全局叠层：数据来自全局朗读会话与设置，不依赖阅读器是否在栈上。
         val pageShellPlayerViewModel: ReadAloudPlayerViewModel =
             org.koin.compose.koinInject()
@@ -602,214 +606,223 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack {
                     MainNavigator.onBackStackChanged()
                 }
         }
-        SharedTransitionLayout {
-            // 启动验证做成单独的 screen：门槛未过时完全不组合应用界面，
-            // 因此验证页背后看不到书架/阅读界面，也没有可交互的入口
-            PrivateAppStartGate {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .playerUnderlaySemantics(playerVisible || morphPresent)
-                    ) {
-                        NavDisplay(
-                            backStack = backStack,
-                            entryDecorators = listOf(
-                                rememberSaveableStateHolderNavEntryDecorator(),
-                                rememberViewModelStoreNavEntryDecorator(),
-                            ),
-                            sceneStrategies = listOf(
-                                remember { ModalOverlaySceneStrategy() },
-                                SinglePaneSceneStrategy(),
-                            ),
-                            transitionSpec = {
-                                (slideIntoContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    ),
-                                    initialOffset = { fullWidth -> fullWidth }
-                                ) + fadeIn(
-                                    animationSpec = tween(
-                                        durationMillis = NAV_FADE_DURATION_MILLIS,
-                                        easing = LinearOutSlowInEasing
-                                    )
-                                )) togetherWith (slideOutOfContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    ),
-                                    targetOffset = { fullWidth -> fullWidth / 4 }
-                                ) + fadeOut(
-                                    animationSpec = tween(
-                                        durationMillis = NAV_FADE_DURATION_MILLIS,
-                                        easing = LinearOutSlowInEasing
-                                    )
-                                ))
-                            },
-                            popTransitionSpec = {
-                                (slideIntoContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    ),
-                                    initialOffset = { fullWidth -> -fullWidth / 4 }
-                                ) + fadeIn(
-                                    animationSpec = tween(
-                                        durationMillis = NAV_FADE_DURATION_MILLIS,
-                                        easing = LinearOutSlowInEasing
-                                    )
-                                )) togetherWith (scaleOut(
-                                    targetScale = 0.8f,
-                                    animationSpec = tween(
-                                        durationMillis = NAV_SLIDE_DURATION_MILLIS,
-                                        easing = FastOutSlowInEasing
-                                    )
-                                ) + fadeOut(animationSpec = tween(durationMillis = NAV_FADE_DURATION_MILLIS)))
-                            },
-                            predictivePopTransitionSpec = { _ ->
-                                (slideIntoContainer(
-                                    towards = AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(easing = FastOutSlowInEasing),
-                                    initialOffset = { fullWidth -> -fullWidth / 4 }
-                                ) + fadeIn(animationSpec = tween(easing = LinearOutSlowInEasing))) togetherWith (scaleOut(
-                                    targetScale = 0.8f,
-                                    animationSpec = tween(easing = FastOutSlowInEasing)
-                                ) + fadeOut(animationSpec = tween()))
-                            },
-                            onBack = { MainNavigator.navigateBack(this@MainActivity, backStack) },
-                            entryProvider = mainEntryProvider(
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            SharedTransitionLayout {
+                // 启动验证做成单独的 screen：门槛未过时完全不组合应用界面，
+                // 因此验证页背后看不到书架/阅读界面，也没有可交互的入口
+                PrivateAppStartGate {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .playerUnderlaySemantics(playerVisible || morphPresent)
+                        ) {
+                            NavDisplay(
                                 backStack = backStack,
-                                configuration = configuration,
-                                showMangaUi = mangaSettings.showMangaUi,
-                                useRail = useRail,
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                onNavigateToRoute = { route ->
-                                    if (route is MainRouteAudioPlay) {
-                                        pageShellCapsuleScope.launch {
-                                            openPlayer(
-                                                PlaybackCapsuleState(
-                                                    source = PlaybackCapsuleSource.AudioBook,
-                                                    bookUrl = route.bookUrl.orEmpty(),
-                                                    inBookshelf = route.inBookshelf,
+                                entryDecorators = listOf(
+                                    rememberSaveableStateHolderNavEntryDecorator(),
+                                    rememberViewModelStoreNavEntryDecorator(),
+                                ),
+                                sceneStrategies = listOf(
+                                    remember { ModalOverlaySceneStrategy() },
+                                    SinglePaneSceneStrategy(),
+                                ),
+                                transitionSpec = {
+                                    (slideIntoContainer(
+                                        towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                                        animationSpec = tween(
+                                            durationMillis = NAV_SLIDE_DURATION_MILLIS,
+                                            easing = FastOutSlowInEasing
+                                        ),
+                                        initialOffset = { fullWidth -> fullWidth }
+                                    ) + fadeIn(
+                                        animationSpec = tween(
+                                            durationMillis = NAV_FADE_DURATION_MILLIS,
+                                            easing = LinearOutSlowInEasing
+                                        )
+                                    )) togetherWith (slideOutOfContainer(
+                                        towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                                        animationSpec = tween(
+                                            durationMillis = NAV_SLIDE_DURATION_MILLIS,
+                                            easing = FastOutSlowInEasing
+                                        ),
+                                        targetOffset = { fullWidth -> fullWidth / 4 }
+                                    ) + fadeOut(
+                                        animationSpec = tween(
+                                            durationMillis = NAV_FADE_DURATION_MILLIS,
+                                            easing = LinearOutSlowInEasing
+                                        )
+                                    ))
+                                },
+                                popTransitionSpec = {
+                                    (slideIntoContainer(
+                                        towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                                        animationSpec = tween(
+                                            durationMillis = NAV_SLIDE_DURATION_MILLIS,
+                                            easing = FastOutSlowInEasing
+                                        ),
+                                        initialOffset = { fullWidth -> -fullWidth / 4 }
+                                    ) + fadeIn(
+                                        animationSpec = tween(
+                                            durationMillis = NAV_FADE_DURATION_MILLIS,
+                                            easing = LinearOutSlowInEasing
+                                        )
+                                    )) togetherWith (scaleOut(
+                                        targetScale = 0.8f,
+                                        animationSpec = tween(
+                                            durationMillis = NAV_SLIDE_DURATION_MILLIS,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    ) + fadeOut(animationSpec = tween(durationMillis = NAV_FADE_DURATION_MILLIS)))
+                                },
+                                predictivePopTransitionSpec = { _ ->
+                                    (slideIntoContainer(
+                                        towards = AnimatedContentTransitionScope.SlideDirection.Start,
+                                        animationSpec = tween(easing = FastOutSlowInEasing),
+                                        initialOffset = { fullWidth -> -fullWidth / 4 }
+                                    ) + fadeIn(animationSpec = tween(easing = LinearOutSlowInEasing))) togetherWith (scaleOut(
+                                        targetScale = 0.8f,
+                                        animationSpec = tween(easing = FastOutSlowInEasing)
+                                    ) + fadeOut(animationSpec = tween()))
+                                },
+                                onBack = { MainNavigator.navigateBack(this@MainActivity, backStack) },
+                                entryProvider = mainEntryProvider(
+                                    backStack = backStack,
+                                    configuration = configuration,
+                                    showMangaUi = mangaSettings.showMangaUi,
+                                    useRail = useRail,
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    onNavigateToRoute = { route ->
+                                        if (route is MainRouteAudioPlay) {
+                                            pageShellCapsuleScope.launch {
+                                                openPlayer(
+                                                    PlaybackCapsuleState(
+                                                        source = PlaybackCapsuleSource.AudioBook,
+                                                        bookUrl = route.bookUrl.orEmpty(),
+                                                        inBookshelf = route.inBookshelf,
+                                                    )
                                                 )
+                                            }
+                                        } else {
+                                            MainNavigator.navigateToRoute(
+                                                backStack,
+                                                route,
+                                                navRouteTracker
                                             )
                                         }
-                                    } else {
-                                        MainNavigator.navigateToRoute(
+                                    },
+                                    onNavigateBack = {
+                                        MainNavigator.navigateBack(
+                                            this@MainActivity,
                                             backStack,
-                                            route,
                                             navRouteTracker
                                         )
+                                    },
+                                    readAloudMorph = readAloudMorph.takeIf { useHomeCapsule },
+                                    homePlaybackCapsuleEnabled = useHomeCapsule,
+                                    capsuleAnchorPreview = capsuleAnchorPreview,
+                                )
+                            )
+                        }
+                        // 全局胶囊与导航容器并列，始终画在阅读等 Nav3 叠层之上。
+                        // 主页开启悬浮底栏时仍使用主页自己的圆形胶囊。
+                        CompositionLocalProvider(
+                            // 收起完成后不再用残留进度给可点击胶囊加透明层。
+                            LocalReadAloudMorph provides readAloudMorph.takeIf {
+                                !useHomeCapsule && (playerVisible || readAloudMorph.progress.isRunning)
+                            }
+                        ) {
+                            ReadAloudShellHost(
+                                showCapsule = pageShellShowCapsule,
+                                hidden = useHomeCapsule,
+                                anchorPreview = capsuleAnchorPreview,
+                                onCapsulePositionChanged = { x, y ->
+                                    pageShellCapsuleScope.launch {
+                                        readAloudSettingsRepository.putCapsulePosition(x, y)
                                     }
                                 },
-                                onNavigateBack = {
-                                    MainNavigator.navigateBack(
-                                        this@MainActivity,
-                                        backStack,
-                                        navRouteTracker
-                                    )
-                                },
-                                readAloudMorph = readAloudMorph.takeIf { useHomeCapsule },
-                                homePlaybackCapsuleEnabled = useHomeCapsule,
-                                capsuleAnchorPreview = capsuleAnchorPreview,
+                                onOpenPlayer = { ReadAloudPlayerOverlayBus.request(it) },
                             )
-                        )
-                    }
-                    // 全局胶囊与导航容器并列，始终画在阅读等 Nav3 叠层之上。
-                    // 主页开启悬浮底栏时仍使用主页自己的圆形胶囊。
-                    CompositionLocalProvider(
-                        // 收起完成后不再用残留进度给可点击胶囊加透明层。
-                        LocalReadAloudMorph provides readAloudMorph.takeIf {
-                            !useHomeCapsule && (playerVisible || readAloudMorph.progress.isRunning)
                         }
-                    ) {
-                        ReadAloudShellHost(
-                            showCapsule = pageShellShowCapsule,
-                            hidden = useHomeCapsule,
-                            anchorPreview = capsuleAnchorPreview,
-                            onCapsulePositionChanged = { x, y ->
-                                pageShellCapsuleScope.launch {
-                                    readAloudSettingsRepository.putCapsulePosition(x, y)
+                        // 听书播放页：同窗口 morph 面板，从胶囊位置长出来。
+                        if (playerSource == PlaybackCapsuleSource.ReadAloud) ReadAloudPlayerMorphHost(
+                            playerViewModel = pageShellPlayerViewModel,
+                            playerState = pageShellPlayerState,
+                            morph = readAloudMorph,
+                            visible = readAloudPlayerVisible,
+                            awaitCapsuleAnchor = pageShellShowCapsule,
+                            predictiveBackEnabled = configuration.appShell.predictiveBackEnabled,
+                            onDismiss = { readAloudPlayerVisible = false },
+                            onSwitchToClassic = { bookUrl ->
+                                // 栈顶是阅读界面：让它直接落在经典朗读控制页；
+                                // 否则没有可用的阅读界面，打开一个新的。
+                                if (isReaderOnTop(backStack)) {
+                                    ReadAloudControlsRequestBus.request()
+                                } else {
+                                    MainNavigator.navigateToRoute(
+                                        backStack,
+                                        MainRouteReadBook(bookUrl = bookUrl.ifBlank { null }),
+                                        navRouteTracker,
+                                    )
                                 }
                             },
-                            onOpenPlayer = { ReadAloudPlayerOverlayBus.request(it) },
+                            onOpenTtsEnginesAndVoices = { bookUrl ->
+                                MainNavigator.navigateToRoute(
+                                    backStack,
+                                    MainRouteCloudTtsEngines(bookUrl.takeIf(String::isNotBlank)),
+                                    navRouteTracker,
+                                )
+                            },
+                            onOpenTtsCache = {
+                                MainNavigator.navigateToRoute(
+                                    backStack,
+                                    MainRouteTtsCache,
+                                    navRouteTracker,
+                                )
+                            },
+                            onOpenBookVoiceCasting = { bookUrl ->
+                                if (bookUrl.isNotBlank()) {
+                                    MainNavigator.navigateToRoute(
+                                        backStack,
+                                        MainRouteBookVoiceCasting(bookUrl),
+                                        navRouteTracker,
+                                    )
+                                }
+                            },
                         )
-                    }
-                    // 听书播放页：同窗口 morph 面板，从胶囊位置长出来。
-                    if (playerSource == PlaybackCapsuleSource.ReadAloud) ReadAloudPlayerMorphHost(
-                        playerViewModel = pageShellPlayerViewModel,
-                        playerState = pageShellPlayerState,
-                        morph = readAloudMorph,
-                        visible = readAloudPlayerVisible,
-                        awaitCapsuleAnchor = pageShellShowCapsule,
-                        predictiveBackEnabled = configuration.appShell.predictiveBackEnabled,
-                        onDismiss = { readAloudPlayerVisible = false },
-                        onSwitchToClassic = { bookUrl ->
-                            // 栈顶是阅读界面：让它直接落在经典朗读控制页；
-                            // 否则没有可用的阅读界面，打开一个新的。
-                            if (isReaderOnTop(backStack)) {
-                                ReadAloudControlsRequestBus.request()
-                            } else {
-                                MainNavigator.navigateToRoute(
-                                    backStack,
-                                    MainRouteReadBook(bookUrl = bookUrl.ifBlank { null }),
-                                    navRouteTracker,
+                        if (playerSource == PlaybackCapsuleSource.AudioBook &&
+                            (audioPlayerVisible || morphPresent)
+                        ) {
+                            key(audioPlayerBookUrl, audioPlayerInBookshelf) {
+                                AudioPlayerMorphOverlay(
+                                    bookUrl = audioPlayerBookUrl,
+                                    inBookshelf = audioPlayerInBookshelf,
+                                    morph = readAloudMorph,
+                                    visible = audioPlayerVisible,
+                                    awaitCapsuleAnchor = pageShellShowCapsule,
+                                    predictiveBackEnabled = configuration.appShell.predictiveBackEnabled,
+                                    onDismiss = { audioPlayerVisible = false },
                                 )
                             }
-                        },
-                        onOpenTtsEnginesAndVoices = { bookUrl ->
-                            MainNavigator.navigateToRoute(
-                                backStack,
-                                MainRouteCloudTtsEngines(bookUrl.takeIf(String::isNotBlank)),
-                                navRouteTracker,
-                            )
-                        },
-                        onOpenTtsCache = {
-                            MainNavigator.navigateToRoute(
-                                backStack,
-                                MainRouteTtsCache,
-                                navRouteTracker,
-                            )
-                        },
-                        onOpenBookVoiceCasting = { bookUrl ->
-                            if (bookUrl.isNotBlank()) {
-                                MainNavigator.navigateToRoute(
-                                    backStack,
-                                    MainRouteBookVoiceCasting(bookUrl),
-                                    navRouteTracker,
-                                )
-                            }
-                        },
-                    )
-                    if (playerSource == PlaybackCapsuleSource.AudioBook &&
-                        (audioPlayerVisible || morphPresent)
-                    ) {
-                        key(audioPlayerBookUrl, audioPlayerInBookshelf) {
-                            AudioPlayerMorphOverlay(
-                                bookUrl = audioPlayerBookUrl,
-                                inBookshelf = audioPlayerInBookshelf,
-                                morph = readAloudMorph,
-                                visible = audioPlayerVisible,
-                                awaitCapsuleAnchor = pageShellShowCapsule,
-                                predictiveBackEnabled = configuration.appShell.predictiveBackEnabled,
-                                onDismiss = { audioPlayerVisible = false },
-                            )
                         }
                     }
+                    BackHandler(
+                        enabled = shouldHandleActivityBack(
+                            predictiveBackEnabled = configuration.appShell.predictiveBackEnabled,
+                            playerPresent = playerVisible || morphPresent,
+                            isRoot = backStack.size <= 1,
+                        )
+                    ) {
+                        MainNavigator.navigateBack(this@MainActivity, backStack)
+                    }
                 }
-                BackHandler(
-                    enabled = shouldHandleActivityBack(
-                        predictiveBackEnabled = configuration.appShell.predictiveBackEnabled,
-                        playerPresent = playerVisible || morphPresent,
-                        isRoot = backStack.size <= 1,
-                    )
-                ) {
-                    MainNavigator.navigateBack(this@MainActivity, backStack)
-                }
+            }
+            // 开屏鼓励语：白底覆盖在应用界面之上，1.8 秒后淡出
+            if (showEncouragement) {
+                EncouragementOverlay(
+                    onDismiss = { showEncouragement = false },
+                )
             }
         }
         TextSheetHost()
