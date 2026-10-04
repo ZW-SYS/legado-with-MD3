@@ -3,7 +3,6 @@ package io.legado.app.ui.main.bookshelf
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import io.legado.app.data.entities.Book
 import io.legado.app.ui.theme.LegadoTheme
 
 /**
@@ -42,7 +40,7 @@ fun MergeNexDialog(
     show: Boolean,
     books: List<BookUiItem>,
     onDismiss: () -> Unit,
-    onConfirm: (selectedBooks: List<Book>, outputTitle: String?) -> Unit,
+    onConfirm: (selectedBookUrls: List<String>, outputTitle: String?) -> Unit,
 ) {
     if (!show) return
 
@@ -77,26 +75,27 @@ fun MergeNexDialog(
                     modifier = Modifier.heightIn(max = 340.dp),
                 ) {
                     items(nexBooks, key = { it.book.bookUrl }) { item ->
+                        val url = item.book.bookUrl
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    selectedUrls = if (selectedUrls.contains(item.book.bookUrl)) {
-                                        selectedUrls - item.book.bookUrl
+                                    selectedUrls = if (selectedUrls.contains(url)) {
+                                        selectedUrls - url
                                     } else {
-                                        selectedUrls + item.book.bookUrl
+                                        selectedUrls + url
                                     }
                                 }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Checkbox(
-                                checked = selectedUrls.contains(item.book.bookUrl),
+                                checked = selectedUrls.contains(url),
                                 onCheckedChange = { checked ->
                                     selectedUrls = if (checked) {
-                                        selectedUrls + item.book.bookUrl
+                                        selectedUrls + url
                                     } else {
-                                        selectedUrls - item.book.bookUrl
+                                        selectedUrls - url
                                     }
                                 },
                             )
@@ -134,10 +133,11 @@ fun MergeNexDialog(
                 Button(
                     enabled = selectedUrls.size >= 2,
                     onClick = {
-                        val selected = nexBooks
+                        // 保持书架上原始顺序
+                        val ordered = nexBooks
                             .filter { selectedUrls.contains(it.book.bookUrl) }
-                            .map { it.book }
-                        onConfirm(selected, outputTitle.trim().ifEmpty { null })
+                            .map { it.book.bookUrl }
+                        onConfirm(ordered, outputTitle.trim().ifEmpty { null })
                     },
                 ) { Text("合并") }
             }
@@ -153,18 +153,20 @@ fun ExportNexDialog(
     show: Boolean,
     books: List<BookUiItem>,
     onDismiss: () -> Unit,
-    onConfirm: (book: Book, format: String) -> Unit,
+    onConfirm: (bookUrl: String, format: String) -> Unit,
 ) {
     if (!show) return
 
     val nexBooks = remember(books) {
         books.filter { it.book.bookUrl.endsWith(".nex", ignoreCase = true) }
     }
-    var selectedBook by remember { mutableStateOf<Book?>(null) }
+    var selectedUrl by remember { mutableStateOf<String?>(null) }
+    var selectedName by remember { mutableStateOf("") }
     var format by remember { mutableStateOf("epub") }
 
-    if (selectedBook == null && nexBooks.size == 1) {
-        selectedBook = nexBooks.first().book
+    if (selectedUrl == null && nexBooks.size == 1) {
+        selectedUrl = nexBooks.first().book.bookUrl
+        selectedName = nexBooks.first().book.name
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -187,16 +189,23 @@ fun ExportNexDialog(
                     modifier = Modifier.heightIn(max = 240.dp),
                 ) {
                     items(nexBooks, key = { it.book.bookUrl }) { item ->
+                        val url = item.book.bookUrl
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { selectedBook = item.book }
+                                .clickable {
+                                    selectedUrl = url
+                                    selectedName = item.book.name
+                                }
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RadioButton(
-                                selected = selectedBook?.bookUrl == item.book.bookUrl,
-                                onClick = { selectedBook = item.book },
+                                selected = selectedUrl == url,
+                                onClick = {
+                                    selectedUrl = url
+                                    selectedName = item.book.name
+                                },
                             )
                             Text(item.book.name, style = MaterialTheme.typography.bodyMedium)
                         }
@@ -228,9 +237,10 @@ fun ExportNexDialog(
                 TextButton(onClick = onDismiss) { Text("取消") }
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    enabled = selectedBook != null,
+                    enabled = selectedUrl != null,
                     onClick = {
-                        selectedBook?.let { onConfirm(it, format) }
+                        val url = selectedUrl ?: return@Button
+                        onConfirm(url, format)
                     },
                 ) { Text("导出") }
             }

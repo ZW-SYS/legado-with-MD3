@@ -2,7 +2,6 @@ package io.legado.app.ui.main.bookshelf
 
 import android.net.Uri
 import androidx.compose.runtime.Stable
-import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.domain.model.PrivateAccessState
 import io.legado.app.domain.model.PrivateUnlockTarget
@@ -110,9 +109,9 @@ sealed interface BookshelfIntent {
         val groupId: Long
     ) : BookshelfIntent
 
-    /** 编辑 .nex 的书名、作者、封面 */
+    /** 编辑 .nex 的书名、作者、封面；用 bookUrl 定位，ViewModel 里查库拿 Book */
     data class EditNex(
-        val book: Book,
+        val bookUrl: String,
         val title: String,
         val author: String,
         val coverUri: Uri?,
@@ -120,13 +119,13 @@ sealed interface BookshelfIntent {
 
     /** 合并多本 .nex */
     data class MergeNex(
-        val books: List<Book>,
+        val bookUrls: List<String>,
         val outputTitle: String?
     ) : BookshelfIntent
 
     /** 导出 .nex 为 EPUB / TXT。format 取 "epub" 或 "txt" */
     data class ExportNex(
-        val book: Book,
+        val bookUrl: String,
         val format: String,
         val targetUri: Uri
     ) : BookshelfIntent
@@ -202,9 +201,6 @@ data class BookshelfUiState(
 
     /**
      * 某个分组当前是否处于锁定态。
-     *
-     * 判定放在这里而不是 ViewModel：只有锁定的是**这个分组自己的内容区**，
-     * 分页容器与相邻分组保持可交互，否则用户会被卡在锁定页里无法切走。
      */
     fun isGroupLocked(group: BookGroupUi): Boolean =
         group.isPrivate &&

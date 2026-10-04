@@ -181,14 +181,9 @@ class BookshelfViewModel(
         }
         .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5000), replay = 1)
 
-    // 与 uiState 同理：常驻订阅，返回书架时首帧就是最新分组，避免补一次跳动
     val allGroupsFlow: StateFlow<List<BookGroup>> = bookGroupRepository.flowAll()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /**
-     * 解锁态：进程内有效，重启应用即回到锁定。Eagerly 是为了点击时能同步读到当前值，
-     * 决定"直接放行 / 弹生物框 / 弹密码框 / 引导设密码"。
-     */
     private val privateAccessStateFlow: StateFlow<PrivateAccessState> =
         privateAccessGateway.state
             .stateIn(viewModelScope, SharingStarted.Eagerly, PrivateAccessState())
@@ -197,7 +192,6 @@ class BookshelfViewModel(
         privateAccessGateway.settings
             .stateIn(viewModelScope, SharingStarted.Eagerly, PrivateAccessSettings())
 
-    /** 解锁态与验证时机一起参与渲染，避免"关了验证却仍然显示锁定态"的分叉 */
     private val privateUiStateFlow: StateFlow<Pair<PrivateAccessState, PrivateAccessSettings>> =
         combine(privateAccessStateFlow, privateAccessSettingsFlow) { access, settings ->
             access to settings
@@ -207,10 +201,6 @@ class BookshelfViewModel(
             PrivateAccessState() to PrivateAccessSettings()
         )
 
-    /**
-     * 私密判定所需的两个来源：私密分组掩码 + 被单独标记的书籍 url。
-     * 判定在内存侧求并集，避免改动 BookDao 里十几处 BookShelfItem 投影。
-     */
     private data class PrivateMarkers(
         val groupMask: Long,
         val bookUrls: Set<String>
@@ -245,10 +235,6 @@ class BookshelfViewModel(
             initialSettings.hideEmptyGroups
         )
 
-    /**
-     * 开启「隐藏空分组」时，返回当前书数为 0、应从分组列表中隐藏的 groupId 集合；
-     * 关闭时始终为空集。「全部」分组永不隐藏，避免书架清空后无标签页可显示。
-     */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val hiddenGroupIdsFlow: SharedFlow<Set<Long>> = hideEmptyGroupsFlow
         .flatMapLatest { hide ->
@@ -400,7 +386,6 @@ class BookshelfViewModel(
         searchModeFlow,
         privateUiStateFlow
     ) { selectedGroup, searchKey, isSearchMode, privateUi ->
-        // 未解锁时私密书籍不参与搜索匹配：否则"搜得到/搜不到"本身就泄漏了书名
         val (privateAccess, privateSettings) = privateUi
         SelectedBooksState(
             groupId = selectedGroup.groupId,
@@ -847,19 +832,16 @@ class BookshelfViewModel(
                 convertToNex(intent.uri, intent.displayName, intent.groupId)
 
             is BookshelfIntent.EditNex ->
-                editNex(intent.book, intent.title, intent.author, intent.coverUri)
+                editNex(intent.bookUrl, intent.title, intent.author, intent.coverUri)
 
             is BookshelfIntent.MergeNex ->
-                mergeNex(intent.books, intent.outputTitle)
+                mergeNex(intent.bookUrls, intent.outputTitle)
 
             is BookshelfIntent.ExportNex ->
-                exportNex(intent.book, intent.format, intent.targetUri)
+                exportNex(intent.bookUrl, intent.format, intent.targetUri)
         }
     }
 
-    /**
-     * 把用户选的文件（EPUB / DOCX / TXT）转成 .nex，存到用户设定的书籍目录，再导入书架。
-     */
     private fun convertToNex(uri: Uri, displayName: String, groupId: Long) {
         if (loadingTextFlow.value != null) return
         loadingTextFlow.value = "准备转换..."
@@ -886,13 +868,12 @@ class BookshelfViewModel(
         }
     }
 
-    /**
-     * 编辑 .nex：改书名、作者、封面。
-     */
-    private fun editNex(book: Book, title: String, author: String, coverUri: Uri?) {
+    private fun editNex(bookUrl: String, title: String, author: String, coverUri: Uri?) {
         if (loadingTextFlow.value != null) return
         loadingTextFlow.value = "正在保存..."
         execute {
+            val book = bookRepository.getBook(bookUrl)
+                ?: throw NoStackTraceException("找不到书籍：$bookUrl")
             NexEditor.edit(context, book, title, author, coverUri) { msg ->
                 loadingTextFlow.value = msg
             }
@@ -906,17 +887,16 @@ class BookshelfViewModel(
         }
     }
 
-    /**
-     * 合并多本 .nex 成一本。
-     */
-    private fun mergeNex(books: List<Book>, outputTitle: String?) {
-        if (books.isEmpty()) {
+    private fun mergeNex(bookUrls: List<String>, outputTitle: String?) {
+        if (bookUrls.isEmpty()) {
             showMessage("没有可合并的书")
             return
         }
         if (loadingTextFlow.value != null) return
         loadingTextFlow.value = "准备合并..."
         execute {
+            val books = bookUrls.mapNotNull { bookRepository.getBook(it) }
+            if (books.size < 2) throw NoStackTraceException("可用书籍不足 2 本")
             val merged = NexMerger.merge(context, books, outputTitle) { msg ->
                 loadingTextFlow.value = msg
             }
@@ -936,13 +916,12 @@ class BookshelfViewModel(
         }
     }
 
-    /**
-     * 把 .nex 导出成 EPUB 或 TXT，写入用户选定的 uri。
-     */
-    private fun exportNex(book: Book, format: String, targetUri: Uri) {
+    private fun exportNex(bookUrl: String, format: String, targetUri: Uri) {
         if (loadingTextFlow.value != null) return
         loadingTextFlow.value = "正在导出..."
         execute {
+            val book = bookRepository.getBook(bookUrl)
+                ?: throw NoStackTraceException("找不到书籍：$bookUrl")
             val file = when (format) {
                 "epub" -> NexExporter.toEpub(context, book) { msg ->
                     loadingTextFlow.value = msg
@@ -954,7 +933,6 @@ class BookshelfViewModel(
 
                 else -> throw IllegalArgumentException("未知格式：$format")
             }
-            // 写入用户选定的 uri
             context.contentResolver.openOutputStream(targetUri, "wt")?.use { out ->
                 file.inputStream().use { it.copyTo(out) }
             } ?: throw IllegalStateException("无法打开输出位置")
@@ -969,9 +947,6 @@ class BookshelfViewModel(
         }
     }
 
-    /**
-     * 私密内容的统一入口：已解锁直接放行，否则按"生物快捷 → 应用内密码 → 引导设密码"降级。
-     */
     private fun requestPrivateUnlock(target: PrivateUnlockTarget) {
         val access = privateAccessStateFlow.value
         if (target is PrivateUnlockTarget.Book) {

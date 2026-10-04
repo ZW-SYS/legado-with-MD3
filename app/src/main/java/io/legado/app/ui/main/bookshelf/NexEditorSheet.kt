@@ -31,11 +31,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import coil.compose.AsyncImage
-import io.legado.app.data.entities.Book
 import io.legado.app.ui.theme.LegadoTheme
 
 /**
@@ -50,7 +47,7 @@ fun NexEditorHost(
     show: Boolean,
     books: List<BookUiItem>,
     onDismiss: () -> Unit,
-    onSave: (book: Book, title: String, author: String, coverUri: Uri?) -> Unit,
+    onSave: (bookUrl: String, title: String, author: String, coverUri: Uri?) -> Unit,
 ) {
     if (!show) return
 
@@ -58,25 +55,32 @@ fun NexEditorHost(
         books.filter { it.book.bookUrl.endsWith(".nex", ignoreCase = true) }
     }
 
-    var selectedBook by remember { mutableStateOf<Book?>(null) }
+    var selectedUrl by remember { mutableStateOf<String?>(null) }
+    var initialTitle by remember { mutableStateOf("") }
+    var initialAuthor by remember { mutableStateOf("") }
 
-    // 多本 → 先选
-    if (selectedBook == null && nexBooks.size > 1) {
+    if (selectedUrl == null && nexBooks.size > 1) {
         BookPickerDialog(
             books = nexBooks,
             onDismiss = onDismiss,
-            onPick = { selectedBook = it.book }
+            onPick = {
+                selectedUrl = it.book.bookUrl
+                initialTitle = it.book.name
+                initialAuthor = it.book.author
+            }
         )
         return
     }
 
-    // 一本 → 直接进
-    if (selectedBook == null && nexBooks.size == 1) {
-        selectedBook = nexBooks.first().book
+    if (selectedUrl == null && nexBooks.size == 1) {
+        val b = nexBooks.first()
+        selectedUrl = b.book.bookUrl
+        initialTitle = b.book.name
+        initialAuthor = b.book.author
     }
 
-    // 没有 .nex
-    if (selectedBook == null) {
+    val currentUrl = selectedUrl
+    if (currentUrl == null) {
         Dialog(onDismissRequest = onDismiss) {
             Column(
                 modifier = Modifier
@@ -94,10 +98,9 @@ fun NexEditorHost(
         return
     }
 
-    val book = selectedBook!!
-    var title by remember(book.bookUrl) { mutableStateOf(book.name) }
-    var author by remember(book.bookUrl) { mutableStateOf(book.author) }
-    var coverUri by remember(book.bookUrl) { mutableStateOf<Uri?>(null) }
+    var title by remember(currentUrl) { mutableStateOf(initialTitle) }
+    var author by remember(currentUrl) { mutableStateOf(initialAuthor) }
+    var coverUri by remember(currentUrl) { mutableStateOf<Uri?>(null) }
 
     val coverPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -115,34 +118,23 @@ fun NexEditorHost(
             Text("编辑 .nex", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
 
-            // 封面区
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp)
+                    .height(80.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFFEEEEEE))
                     .clickable { coverPicker.launch("image/*") },
                 contentAlignment = Alignment.Center,
             ) {
-                if (coverUri != null) {
-                    AsyncImage(
-                        model = coverUri,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp),
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(if (coverUri == null) "点击选择封面" else "已选择新封面")
+                    Text(
+                        if (coverUri == null) "(不选则保留原封面)"
+                        else (coverUri?.lastPathSegment ?: ""),
+                        color = Color(0xFF999999),
+                        style = MaterialTheme.typography.bodySmall,
                     )
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("点击选择封面")
-                        Text(
-                            "(不选则保留原封面)",
-                            color = Color(0xFF999999),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
                 }
             }
 
@@ -169,7 +161,9 @@ fun NexEditorHost(
                 TextButton(onClick = onDismiss) { Text("取消") }
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = { onSave(book, title.trim(), author.trim(), coverUri) },
+                    onClick = {
+                        onSave(currentUrl, title.trim(), author.trim(), coverUri)
+                    },
                 ) { Text("保存") }
             }
         }
