@@ -212,7 +212,6 @@ fun BookshelfRouteScreen(
 
     var pendingExportBookUrl by remember { mutableStateOf<String?>(null) }
     var pendingExportFormat by remember { mutableStateOf("epub") }
-    var pendingExportName by remember { mutableStateOf("book") }
     val exportNexLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { uri ->
@@ -228,7 +227,6 @@ fun BookshelfRouteScreen(
         pendingExportBookUrl = bookUrl
         pendingExportFormat = format
         val name = state.items.firstOrNull { it.book.bookUrl == bookUrl }?.book?.name ?: "book"
-        pendingExportName = name
         exportNexLauncher.launch("$name.$format")
     }
 
@@ -351,15 +349,12 @@ fun BookshelfScreen(
                     )
                     if (result == SnackbarResult.ActionPerformed && effect.url != null) {
                         clipboardManager.setClipEntry(
-                            ClipEntry(
-                                ClipData.newPlainText("url", effect.url)
-                            )
+                            ClipEntry(ClipData.newPlainText("url", effect.url))
                         )
                     }
                 }
 
                 is BookshelfEffect.RequestBiometricUnlock -> launchBiometricUnlock(effect.target)
-
                 BookshelfEffect.NavigateToLocalPasswordSettings -> onNavigateToSettings()
             }
         }
@@ -672,11 +667,8 @@ fun BookshelfScreen(
                             },
                             imageVector = Icons.Default.Lock,
                             contentDescription = stringResource(
-                                if (targetPrivate) {
-                                    R.string.private_mark_book
-                                } else {
-                                    R.string.private_unmark_book
-                                }
+                                if (targetPrivate) R.string.private_mark_book
+                                else R.string.private_unmark_book
                             )
                         )
                     }
@@ -870,11 +862,7 @@ fun BookshelfScreen(
                                                         selectedTabIndex == index
                                                     }
                                                     if (isSelected) {
-                                                        Icon(
-                                                            Icons.Default.Check,
-                                                            null,
-                                                            modifier = Modifier.size(18.dp)
-                                                        )
+                                                        Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
                                                     }
                                                 }
                                             )
@@ -904,11 +892,7 @@ fun BookshelfScreen(
                                                         },
                                                         trailingIcon = {
                                                             if (uiState.selectedGroupId == group.groupId) {
-                                                                Icon(
-                                                                    Icons.Default.Check,
-                                                                    null,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
+                                                                Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
                                                             }
                                                         }
                                                     )
@@ -923,11 +907,7 @@ fun BookshelfScreen(
                                                         },
                                                         trailingIcon = {
                                                             if (uiState.selectedGroupId == group.groupId) {
-                                                                Icon(
-                                                                    Icons.Default.Check,
-                                                                    null,
-                                                                    modifier = Modifier.size(18.dp)
-                                                                )
+                                                                Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
                                                             }
                                                         }
                                                     )
@@ -1020,9 +1000,7 @@ fun BookshelfScreen(
                                         stringResource(R.string.book_count, it)
                                     }
                                 } else null
-                                val previewBooks = if (groupLocked) {
-                                    emptyList()
-                                } else {
+                                val previewBooks = if (groupLocked) emptyList() else {
                                     uiState.groupPreviews[group.groupId] ?: emptyList()
                                 }
                                 if (bookshelfFolderLayoutMode == 0) {
@@ -1260,11 +1238,7 @@ fun BookshelfScreen(
                                     },
                                     trailingIcon = {
                                         if (currentMenuGroupId == group.groupId) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
                                         }
                                     }
                                 )
@@ -1287,12 +1261,13 @@ fun BookshelfScreen(
         clearSelection = clearSelection
     )
 
+    // 新：编辑器（WebView 版）
     NexEditorHost(
         show = showNexEditor,
         books = uiState.items,
         onDismiss = { showNexEditor = false },
-        onSave = { bookUrl, title, author, coverUri ->
-            onIntent(BookshelfIntent.EditNex(bookUrl, title, author, coverUri))
+        onSave = { bookUrl, payload ->
+            onIntent(BookshelfIntent.SaveNexFromEditor(bookUrl, payload))
             showNexEditor = false
         },
     )

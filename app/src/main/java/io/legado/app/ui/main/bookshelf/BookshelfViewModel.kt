@@ -127,7 +127,6 @@ class BookshelfViewModel(
     private val isInitialLoadingFlow = MutableStateFlow(true)
     private val pendingUploadUrlFlow = MutableStateFlow<String?>(null)
 
-    /** 点击脱敏的私密书籍后挂起、等解锁成功再打开的目标书 */
     private val pendingOpenBookUrlFlow = MutableStateFlow<String?>(null)
 
     private data class BookshelfSortConfig(
@@ -149,7 +148,6 @@ class BookshelfViewModel(
             BookshelfSortConfig(initialSettings.bookshelfSort, initialSettings.bookshelfSortOrder)
         )
 
-    // 更新相关
     private val updateQueueLock = Any()
     private val waitUpTocBooks = LinkedList<String>()
     private val onUpTocBooks = ConcurrentHashMap.newKeySet<String>()
@@ -831,8 +829,8 @@ class BookshelfViewModel(
             is BookshelfIntent.ConvertToNex ->
                 convertToNex(intent.uri, intent.displayName, intent.groupId)
 
-            is BookshelfIntent.EditNex ->
-                editNex(intent.bookUrl, intent.title, intent.author, intent.coverUri)
+            is BookshelfIntent.SaveNexFromEditor ->
+                saveNexFromEditor(intent.bookUrl, intent.payload)
 
             is BookshelfIntent.MergeNex ->
                 mergeNex(intent.bookUrls, intent.outputTitle)
@@ -868,19 +866,31 @@ class BookshelfViewModel(
         }
     }
 
-    private fun editNex(bookUrl: String, title: String, author: String, coverUri: Uri?) {
+    /**
+     * 编辑器保存。
+     * - bookUrl == null：新建 .nex，存到用户目录后导入书架
+     * - bookUrl != null：覆盖已有 .nex
+     */
+    private fun saveNexFromEditor(bookUrl: String?, payload: String) {
         if (loadingTextFlow.value != null) return
         loadingTextFlow.value = "正在保存..."
         execute {
-            val book = bookRepository.getBook(bookUrl)
-                ?: throw NoStackTraceException("找不到书籍：$bookUrl")
-            NexEditor.edit(context, book, title, author, coverUri) { msg ->
+            val file = NexEditor.exportFromEditor(context, bookUrl, payload) { msg ->
                 loadingTextFlow.value = msg
             }
-        }.onSuccess {
-            showMessage("已保存")
+            if (bookUrl != null) {
+                null
+            } else {
+                val savedUri = file.inputStream().use { input ->
+                    LocalBook.saveBookFile(input, file.name)
+                }
+                file.delete()
+                LocalBook.importFile(savedUri)
+            }
+        }.onSuccess { newBook ->
+            showMessage(if (newBook != null) "已保存并加入书架：${newBook.name}" else "已保存")
         }.onError {
-            AppLog.put("编辑 .nex 失败\n${it.localizedMessage}", it)
+            AppLog.put("编辑器保存失败\n${it.localizedMessage}", it)
             showMessage("保存失败：${it.localizedMessage ?: "未知错误"}")
         }.onFinally {
             loadingTextFlow.value = null

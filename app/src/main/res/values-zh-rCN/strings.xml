@@ -136,10 +136,8 @@
     <string name="offline_cache_t">离线缓存</string>
     <string name="offline_cache_s">缓存选择的章节到本地</string>
     <string name="change_origin">换源</string>
-    <string name="about_description">全新设计的阅读 3.0</string>
-    <string name="app_share_description">
-        阅读 3.0 下载地址：\nhttps://github.com/gedoor/legado/releases
-    </string>
+    <string name="about_description">阅读Max · 支持 .nex 格式的本地阅读器</string>
+    <string name="app_share_description">阅读Max 下载地址：\nhttps://github.com/ZW-SYS/legado-with-MD3-Max/releases</string>
     <string name="version_name">版本 %s</string>
     <string name="pt_background_verification">后台校验书源</string>
     <string name="ps_background_verification">打开后可以在校验书源时自由操作</string>
@@ -1003,7 +1001,7 @@
     <string name="alipay_red_envelope_qr_code">支付宝红包二维码</string>
     <string name="alipay_payment_qr_code">支付宝收款二维码</string>
     <string name="qq_collection_qr_code">QQ 收款二维码</string>
-    <string name="contributors_summary">gedoor、Invinciblelee 和 Xwite 等，详情请在 GitHub 中查看</string>
+    <string name="contributors_summary">本版本由 ZW-SYS 开发，基于 HapeLee/legado-with-MD3 二次开发</string>
     <string name="clear_cache_summary">清除已下载书籍和字体缓存</string>
     <string name="default_cover">默认封面</string>
     <string name="restore_ignore">恢复忽略列表</string>

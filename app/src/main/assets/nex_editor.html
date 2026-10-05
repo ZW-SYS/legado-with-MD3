@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>NEX 编辑器</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Noto Sans SC", sans-serif;
+    background: #12161c;
+    color: #e6e6e6;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    background: #1a1f26;
+    border-bottom: 1px solid #2a313c;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  header button {
+    background: #2b3542;
+    border: none;
+    color: #e6e6e6;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  header button:active { background: #3b4d63; }
+  header button.primary { background: #3d6ef5; font-weight: 600; }
+  header button.primary:active { background: #5580ff; }
+  header .title {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #e6e6e6;
+    font-size: 14px;
+    outline: none;
+    min-width: 0;
+    padding: 4px 6px;
+  }
+  header .title::placeholder { color: #6a7a8c; }
+
+  .meta {
+    background: #1a1f26;
+    border-bottom: 1px solid #2a313c;
+    padding: 6px 10px;
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .meta input {
+    flex: 1;
+    background: #0d1117;
+    border: 1px solid #2a313c;
+    border-radius: 6px;
+    color: #e6e6e6;
+    font-size: 13px;
+    padding: 6px 8px;
+    min-width: 0;
+  }
+  .meta input::placeholder { color: #5a6a7c; }
+
+  .toolbar {
+    background: #171c23;
+    border-bottom: 1px solid #2a313c;
+    padding: 6px 8px;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    overflow-x: auto;
+    flex-shrink: 0;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .toolbar button, .toolbar label.btn {
+    flex-shrink: 0;
+    background: #2b3542;
+    border: none;
+    color: #e6e6e6;
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 13px;
+    cursor: pointer;
+    min-width: 32px;
+    text-align: center;
+  }
+  .toolbar button:active { background: #3b4d63; }
+  .toolbar button.on { background: #3d6ef5; }
+  .toolbar .sep {
+    flex-shrink: 0;
+    width: 1px;
+    height: 20px;
+    background: #2a313c;
+    margin: 0 2px;
+  }
+  .toolbar select {
+    flex-shrink: 0;
+    background: #2b3542;
+    border: none;
+    color: #e6e6e6;
+    border-radius: 6px;
+    padding: 6px 4px;
+    font-size: 12px;
+    height: 32px;
+  }
+  .toolbar .col-wrap {
+    position: relative;
+    flex-shrink: 0;
+    display: inline-flex;
+  }
+  .toolbar .col-wrap input[type=color] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+  }
+
+  #editorWrap {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: #12161c;
+    padding: 14px 10px 80px;
+  }
+  #editor {
+    max-width: 44em;
+    margin: 0 auto;
+    background: #ffffff;
+    color: #1a1a1a;
+    border-radius: 10px;
+    padding: 22px 18px;
+    min-height: 60vh;
+    font-family: "Noto Serif SC", Georgia, serif;
+    font-size: 16px;
+    line-height: 1.85;
+    outline: none;
+    word-break: break-word;
+  }
+  #editor:empty::before { content: "在这里写正文…"; color: #b0b0b0; }
+  #editor h1 { font-size: 1.7em; border-bottom: 2px solid #eee; padding-bottom: .3em; margin: .8em 0 .5em; }
+  #editor h2 { font-size: 1.4em; border-bottom: 1px solid #eee; padding-bottom: .3em; margin: .8em 0 .5em; }
+  #editor h3 { font-size: 1.2em; margin: .8em 0 .4em; }
+  #editor blockquote { border-left: 4px solid #3d6ef5; margin: 10px 0; padding: 4px 14px; color: #555; background: #f5f7ff; }
+  #editor img, #editor video {
+    max-width: 100%;
+    display: block;
+    margin: 8px 0;
+    border-radius: 8px;
+  }
+  #editor .media-wrap {
+    display: inline-block;
+    position: relative;
+    max-width: 100%;
+    margin: 10px 0;
+    vertical-align: bottom;
+  }
+  #editor .media-wrap.selected { outline: 2px solid #3d6ef5; outline-offset: 3px; }
+  #editor .media-wrap.video::after {
+    content: "▶";
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 48px; height: 48px;
+    background: rgba(0,0,0,.55);
+    color: #fff;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 48px;
+    font-size: 20px;
+    pointer-events: none;
+  }
+
+  body.preview #editorWrap { background: #1a1f26; }
+  body.preview #editor { cursor: default; }
+  body.preview .toolbar { display: none; }
+  body.preview #editor .media-wrap.selected { outline: none; }
+
+  footer {
+    background: #1a1f26;
+    border-top: 1px solid #2a313c;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: #7a8a9c;
+    display: flex;
+    gap: 14px;
+    flex-shrink: 0;
+  }
+  footer .spacer { flex: 1; }
+
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 80px;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(20,24,30,.95);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 20px;
+    font-size: 13px;
+    opacity: 0;
+    transition: .2s;
+    pointer-events: none;
+    z-index: 999;
+    max-width: 80vw;
+    text-align: center;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #emojiPanel {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    background: #1a1f26;
+    border-top: 1px solid #2a313c;
+    padding: 10px;
+    max-height: 40vh;
+    overflow-y: auto;
+    display: none;
+    z-index: 100;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  #emojiPanel.show { display: flex; }
+  #emojiPanel span {
+    font-size: 24px;
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  #emojiPanel span:active { background: #2b3542; }
+</style>
+</head>
+<body>
+
+<header>
+  <button id="btnBack">返回</button>
+  <input class="title" id="titleInput" placeholder="书名" value="未命名">
+  <button id="btnPreview">预览</button>
+  <button class="primary" id="btnSave">保存</button>
+</header>
+
+<div class="meta">
+  <input id="authorInput" placeholder="作者" value="佚名">
+</div>
+
+<div class="toolbar" id="toolbar">
+  <button data-cmd="undo">↶</button>
+  <button data-cmd="redo">↷</button>
+  <div class="sep"></div>
+  <button data-cmd="bold"><b>B</b></button>
+  <button data-cmd="italic"><i>I</i></button>
+  <button data-cmd="underline"><u>U</u></button>
+  <button data-cmd="strikeThrough"><s>S</s></button>
+  <div class="sep"></div>
+  <button data-block="h1">H1</button>
+  <button data-block="h2">H2</button>
+  <button data-block="h3">H3</button>
+  <button data-block="p">正文</button>
+  <button data-block="blockquote">引用</button>
+  <div class="sep"></div>
+  <select id="fontSize">
+    <option value="">字号</option>
+    <option>14</option><option>16</option><option>18</option>
+    <option>20</option><option>24</option><option>28</option>
+    <option>32</option><option>40</option><option>48</option>
+  </select>
+  <select id="fontFamily">
+    <option value="">字体</option>
+    <option value="SimSun,宋体,serif">宋体</option>
+    <option value="KaiTi,楷体,STKaiti,serif">楷体</option>
+    <option value="SimHei,黑体,sans-serif">黑体</option>
+    <option value="Noto Serif SC,serif">思源宋体</option>
+    <option value="Noto Sans SC,sans-serif">思源黑体</option>
+  </select>
+  <div class="sep"></div>
+  <label class="col-wrap" title="文字颜色">
+    <button>A</button>
+    <input type="color" id="foreColor" value="#1a1a1a">
+  </label>
+  <label class="col-wrap" title="高亮颜色">
+    <button style="text-decoration:underline;text-decoration-color:#ffeb3b">◆</button>
+    <input type="color" id="backColor" value="#fff3a8">
+  </label>
+  <div class="sep"></div>
+  <button id="btnImg">🖼 图片</button>
+  <button id="btnVideo">🎬 视频</button>
+  <button id="btnEmoji">😀 表情</button>
+  <div class="sep"></div>
+  <button data-cmd="insertUnorderedList">• 列表</button>
+  <button data-cmd="insertOrderedList">1. 列表</button>
+  <button data-cmd="justifyCenter">居中</button>
+  <button data-cmd="justifyLeft">左对齐</button>
+  <div class="sep"></div>
+  <button id="btnHr">分割线</button>
+</div>
+
+<div id="editorWrap">
+  <div id="editor" contenteditable="true" spellcheck="false"></div>
+</div>
+
+<footer>
+  <span id="statWords">字数 0</span>
+  <span id="statChapters">章节 0</span>
+  <span id="statImages">图片 0</span>
+  <span class="spacer"></span>
+  <span id="statSaved">未保存</span>
+</footer>
+
+<div id="emojiPanel"></div>
+<div id="toast"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  var editor = document.getElementById('editor');
+  var titleInput = document.getElementById('titleInput');
+  var authorInput = document.getElementById('authorInput');
+  var toastEl = document.getElementById('toast');
+  var toastTimer = null;
+
+  function showToast(msg, ms) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() {
+      toastEl.classList.remove('show');
+    }, ms || 1600);
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+      return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
+    });
+  }
+
+  // ========== 选区 ==========
+  var savedRange = null;
+
+  function saveRange() {
+    var sel = window.getSelection();
+    if (sel && sel.rangeCount && editor.contains(sel.anchorNode)) {
+      savedRange = sel.getRangeAt(0).cloneRange();
+    }
+  }
+  function restoreRange() {
+    if (!savedRange) return false;
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(savedRange);
+    return true;
+  }
+
+  editor.addEventListener('mouseup', saveRange);
+  editor.addEventListener('keyup', saveRange);
+  editor.addEventListener('input', function() { saveRange(); updateStats(); markDirty(); });
+  editor.addEventListener('blur', saveRange);
+
+  document.getElementById('toolbar').addEventListener('mousedown', function(e) {
+    if (e.target.closest('button') || e.target.closest('label') || e.target.closest('select')) {
+      if (e.target.tagName === 'SELECT' || e.target.type === 'color' || e.target.closest('label')) return;
+      e.preventDefault();
+    }
+  });
+
+  // ========== 富文本命令 ==========
+  function exec(cmd, val) {
+    editor.focus();
+    restoreRange();
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand(cmd, false, val == null ? null : val);
+    saveRange();
+    updateToolbarState();
+  }
+
+  document.querySelectorAll('#toolbar button[data-cmd]').forEach(function(btn) {
+    btn.addEventListener('click', function() { exec(btn.dataset.cmd); });
+  });
+  document.querySelectorAll('#toolbar button[data-block]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      editor.focus();
+      restoreRange();
+      document.execCommand('formatBlock', false, btn.dataset.block);
+      saveRange();
+    });
+  });
+
+  document.getElementById('fontSize').addEventListener('change', function(e) {
+    var v = e.target.value;
+    if (!v) return;
+    editor.focus();
+    restoreRange();
+    var sel = window.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      wrapSelection(function(span) { span.style.fontSize = v + 'px'; });
+    } else {
+      editor.style.fontSize = v + 'px';
+    }
+    saveRange();
+    e.target.selectedIndex = 0;
+  });
+
+  document.getElementById('fontFamily').addEventListener('change', function(e) {
+    var v = e.target.value;
+    if (!v) return;
+    editor.focus();
+    restoreRange();
+    var sel = window.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      wrapSelection(function(span) { span.style.fontFamily = v; });
+    } else {
+      editor.style.fontFamily = v;
+    }
+    saveRange();
+    e.target.selectedIndex = 0;
+  });
+
+  document.getElementById('foreColor').addEventListener('input', function(e) {
+    editor.focus();
+    restoreRange();
+    wrapSelection(function(span) { span.style.color = e.target.value; });
+    saveRange();
+  });
+
+  document.getElementById('backColor').addEventListener('input', function(e) {
+    editor.focus();
+    restoreRange();
+    wrapSelection(function(span) { span.style.backgroundColor = e.target.value; });
+    saveRange();
+  });
+
+  function wrapSelection(styleFn) {
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return false;
+    var range = sel.getRangeAt(0);
+    if (range.collapsed) return false;
+    try {
+      var frag = range.extractContents();
+      var span = document.createElement('span');
+      styleFn(span);
+      span.appendChild(frag);
+      range.insertNode(span);
+      var r = document.createRange();
+      r.selectNodeContents(span);
+      sel.removeAllRanges();
+      sel.addRange(r);
+      savedRange = r.cloneRange();
+      return true;
+    } catch (err) { return false; }
+  }
+
+  document.getElementById('btnHr').addEventListener('click', function() {
+    editor.focus();
+    restoreRange();
+    document.execCommand('insertHTML', false, '<hr><p><br></p>');
+    saveRange();
+  });
+
+  function updateToolbarState() {
+    var map = { bold:1, italic:1, underline:1, strikeThrough:1,
+                insertUnorderedList:1, insertOrderedList:1,
+                justifyCenter:1, justifyLeft:1 };
+    document.querySelectorAll('#toolbar button[data-cmd]').forEach(function(btn) {
+      if (!map[btn.dataset.cmd]) return;
+      try { btn.classList.toggle('on', document.queryCommandState(btn.dataset.cmd)); } catch (e) {}
+    });
+  }
+  document.addEventListener('selectionchange', function() {
+    var sel = window.getSelection();
+    if (sel && sel.rangeCount && editor.contains(sel.anchorNode)) saveRange();
+    updateToolbarState();
+  });
+
+  // ========== 插入图片/视频：让 Android 处理，不用 Base64 ==========
+  document.getElementById('btnImg').addEventListener('click', function() {
+    if (window.NexBridge && window.NexBridge.pickMedia) {
+      window.NexBridge.pickMedia('image');
+    } else {
+      showToast('未检测到 App 桥接');
+    }
+  });
+  document.getElementById('btnVideo').addEventListener('click', function() {
+    if (window.NexBridge && window.NexBridge.pickMedia) {
+      window.NexBridge.pickMedia('video');
+    } else {
+      showToast('未检测到 App 桥接');
+    }
+  });
+
+  // Android 端处理完文件后，调用这个把路径插进编辑器
+  window.onMediaPicked = function(path, type) {
+    var html;
+    if (type === 'video') {
+      html = '<div class="media-wrap video" contenteditable="false" ' +
+             'style="width:320px"><video src="' + path + '" controls></video></div><p><br></p>';
+    } else {
+      html = '<div class="media-wrap" contenteditable="false" ' +
+             'style="width:320px"><img src="' + path + '"></div><p><br></p>';
+    }
+    editor.focus();
+    restoreRange();
+    document.execCommand('insertHTML', false, html);
+    saveRange();
+    updateStats();
+    markDirty();
+    showToast(type === 'video' ? '视频已插入' : '图片已插入');
+  };
+
+  // 点击媒体选中
+  editor.addEventListener('click', function(e) {
+    var wrap = e.target.closest('.media-wrap');
+    document.querySelectorAll('#editor .media-wrap.selected').forEach(function(el) {
+      if (el !== wrap) el.classList.remove('selected');
+    });
+    if (wrap && !document.body.classList.contains('preview')) {
+      wrap.classList.add('selected');
+    }
+  });
+
+  // ========== Emoji ==========
+  var EMOJIS = [
+    '😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇',
+    '🙂','😉','😍','😘','😜','🤪','🤔','🤨','😐','😑',
+    '😶','😏','😒','🙄','😬','😴','🤤','😷','🤒','🤕',
+    '🥳','😎','🤓','🧐','😕','😟','🙁','😮','😯','😲',
+    '😳','🥺','😢','😭','😱','😖','😣','😞','😓','😩',
+    '🥱','😤','😡','🤬','💀','💩','🤡','👹','👻','👽',
+    '🤖','😺','😸','😹','😻','❤️','🧡','💛','💚','💙',
+    '💜','🖤','💔','💕','💞','💓','💗','💖','💘','💝',
+    '✨','🔥','⭐','🌟','💫','⚡','☀️','🌈','❄️','💧',
+    '🌊','🎉','🎊','🎈','🎁','🏆','🥇','🚀','✈️','🚗',
+    '🌸','🌺','🌻','🌹','🍀','🍁','🌿','🌵','🌴','🌳'
+  ];
+  var emojiPanel = document.getElementById('emojiPanel');
+  emojiPanel.innerHTML = EMOJIS.map(function(em) {
+    return '<span data-emoji="' + em + '">' + em + '</span>';
+  }).join('');
+
+  emojiPanel.addEventListener('click', function(e) {
+    var sp = e.target.closest('span[data-emoji]');
+    if (!sp) return;
+    editor.focus();
+    restoreRange();
+    document.execCommand('insertText', false, sp.dataset.emoji);
+    saveRange();
+    updateStats();
+    markDirty();
+  });
+
+  document.getElementById('btnEmoji').addEventListener('click', function() {
+    emojiPanel.classList.toggle('show');
+  });
+
+  // ========== 预览 ==========
+  var previewOn = false;
+  document.getElementById('btnPreview').addEventListener('click', function() {
+    previewOn = !previewOn;
+    document.body.classList.toggle('preview', previewOn);
+    editor.setAttribute('contenteditable', previewOn ? 'false' : 'true');
+    this.textContent = previewOn ? '编辑' : '预览';
+    document.querySelectorAll('#editor .media-wrap.selected').forEach(function(el) {
+      el.classList.remove('selected');
+    });
+  });
+
+  // ========== 统计 ==========
+  function updateStats() {
+    var text = editor.innerText || '';
+    var chars = text.replace(/\s/g, '').length;
+    var lines = text.split('\n');
+    var chapterRe = /^\s*第[一二三四五六七八九十百千万零两0-9]{1,10}[章节回卷篇]\s*[^\n]{0,50}$/;
+    var chapters = 0;
+    for (var i = 0; i < lines.length; i++) {
+      if (chapterRe.test(lines[i])) chapters++;
+    }
+    var images = editor.querySelectorAll('img').length;
+    document.getElementById('statWords').textContent = '字数 ' + chars;
+    document.getElementById('statChapters').textContent = '章节 ' + chapters;
+    document.getElementById('statImages').textContent = '图片 ' + images;
+  }
+
+  // ========== 保存 ==========
+  var dirty = false;
+  function markDirty() {
+    dirty = true;
+    var el = document.getElementById('statSaved');
+    el.textContent = '未保存';
+    el.style.color = '#e0a020';
+  }
+  function markSaved() {
+    dirty = false;
+    var el = document.getElementById('statSaved');
+    el.textContent = '已保存';
+    el.style.color = '#4ac97e';
+  }
+
+  document.getElementById('btnSave').addEventListener('click', function() {
+    var title = (titleInput.value || '未命名').trim();
+    var author = (authorInput.value || '佚名').trim();
+    var html = editor.innerHTML || '<p>（空）</p>';
+    var fontSize = parseInt(editor.style.fontSize, 10) || 16;
+
+    var payload = {
+      title: title,
+      author: author,
+      html: html,
+      fontSize: fontSize
+    };
+    try {
+      if (window.NexBridge && window.NexBridge.saveContent) {
+        window.NexBridge.saveContent(JSON.stringify(payload));
+        markSaved();
+        showToast('正在保存…');
+      } else {
+        showToast('未检测到 App 桥接');
+      }
+    } catch (err) {
+      showToast('保存失败：' + err.message);
+    }
+  });
+
+  // ========== 返回 ==========
+  document.getElementById('btnBack').addEventListener('click', function() {
+    if (dirty && !confirm('有未保存的内容，确定返回吗？')) return;
+    if (window.NexBridge && window.NexBridge.closeEditor) {
+      window.NexBridge.closeEditor();
+    }
+  });
+
+  // ========== Android 调用：载入已有 .nex ==========
+  window.loadContent = function(title, author, html, fontSize) {
+    titleInput.value = title || '未命名';
+    authorInput.value = author || '佚名';
+    editor.innerHTML = html || '';
+    if (fontSize) editor.style.fontSize = fontSize + 'px';
+    updateStats();
+    dirty = false;
+    var el = document.getElementById('statSaved');
+    el.textContent = '已加载';
+    el.style.color = '#7a8a9c';
+  };
+
+  updateStats();
+})();
+</script>
+</body>
+</html>
